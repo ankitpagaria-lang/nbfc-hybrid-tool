@@ -8,7 +8,6 @@ import io
 import json
 import pypdf
 import time
-import random
 
 # --- CONFIG ---
 st.set_page_config(page_title="Hybrid NBFC Vault (Gemini 3.0)", layout="wide")
@@ -20,61 +19,87 @@ def get_creds():
         scopes=['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets']
     )
 
-# --- SMART MODEL SELECTOR (UPDATED FOR GEMINI 3 & 2.5) ---
-def get_best_model(api_key):
+# --- SMART MODEL ENGINE ---
+def get_working_model(api_key):
     """
-    Prioritizes Gemini 3.0 -> Gemini 2.5 -> Gemini 2.0 -> Legacy.
+    Tries to find the best model your account is ALLOWED to use.
     """
     genai.configure(api_key=api_key)
-    try:
-        # Get list of all models available to your key
-        all_models = list(genai.list_models())
-        capable_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
-        
-        # 2026 PRIORITY LADDER
-        priority_order = [
-            "gemini-3-pro-preview",    # Latest bleeding edge (Nov 2025)
-            "gemini-3-flash-preview",  # Latest fast model (Dec 2025)
-            "gemini-2.5-pro",          # Stable Workhorse (June 2025)
-            "gemini-2.5-flash",        # Stable Fast (June 2025)
-            "gemini-2.0-flash",        # Legacy reliable
-            "gemini-1.5-pro",          # Old reliable
-            "gemini-1.5-flash"         # Old fast
-        ]
-
-        # Check for specific matches in priority order
-        for priority in priority_order:
-            for m_name in capable_models:
-                if priority in m_name:
-                    return m_name
-        
-        # Fallback: Just take the newest one we can find
-        if capable_models:
-            return capable_models[0]
-            
-    except Exception as e:
-        print(f"Model listing failed: {e}")
     
-    # Ultimate Fallback if list_models fails
-    return "models/gemini-2.5-flash"
+    # Priority List (2026 Era): Bleeding Edge -> Stable -> Safe Fallback
+    priority_list = [
+        "gemini-3-pro-preview",    # Latest & Greatest
+        "gemini-3-flash-preview",  # Fast Latest
+        "gemini-2.5-pro",          # Standard High-End
+        "gemini-2.5-flash",        # Standard Fast
+        "gemini-2.0-flash",        # Legacy
+        "gemini-1.5-flash"         # THE SAFETY NET (Works for everyone)
+    ]
+    
+    # We will just return the list to let the main loop try them one by one
+    return priority_list
 
-# --- ROBUST AI CALLER (With Retry) ---
-def call_gemini_with_retry(model, content_list):
-    max_retries = 3
-    for attempt in range(max_retries):
+# --- ROBUST ANALYSIS ENGINE ---
+def analyze_pdf(pdf_bytes):
+    api_key = st.secrets["gemini_api_key"]
+    genai.configure(api_key=api_key)
+    
+    models_to_try = get_working_model(api_key)
+    
+    # Extract Text ONCE (Works for all models)
+    text_content = extract_text_from_pdf(pdf_bytes)
+    if not text_content:
+        st.error("❌ Error: PDF appears to be empty or scanned.")
+        return None
+
+    prompt = """
+    Act as a Senior Financial Analyst. Extract data from this earnings report.
+    
+    TASK 1: FINANCIALS (Normalize to INR Crores. If Mn, divide by 10).
+    JSON Keys: interest_income, interest_expense, nii, other_income, total_income, opex, ppop, provisions, pbt, tax, pat, aum, gnpa_percent, nnpa_percent.
+    
+    TASK 2: STRATEGY (1 sentence summary).
+    JSON Keys: ai_digital, hr_people, geography, credit_borrowings, partnerships, leadership, product_mix, customer_eng, new_initiatives, productivity.
+    
+    OUTPUT: Single JSON object with keys "financials" and "strategy".
+    """
+
+    # --- THE FALLBACK LOOP ---
+    last_error = None
+    
+    for model_name in models_to_try:
         try:
-            response = model.generate_content(content_list)
-            return response
+            # Show the user which brain we are testing
+            status_msg = st.empty()
+            status_msg.caption(f"🤖 Attempting with brain: **{model_name}**...")
+            
+            model = genai.GenerativeModel(model_name)
+            
+            # Send Request
+            response = model.generate_content([prompt, text_content])
+            
+            # If we get here, IT WORKED!
+            status_msg.success(f"✅ Success! Used brain: **{model_name}**")
+            time.sleep(1) # Let user see the success message
+            status_msg.empty() # Clear it
+            
+            return clean_json(response.text)
+            
         except Exception as e:
+            # If it fails (Quota, 404, 429), catch it and try the next one
             error_str = str(e).lower()
-            # Catch 429 (Rate Limit) or 503 (Overloaded)
-            if "429" in error_str or "quota" in error_str or "503" in error_str:
-                wait_time = 30 + (attempt * 10)
-                st.toast(f"⚠️ High Traffic on Gemini 3. Pausing for {wait_time}s...")
-                time.sleep(wait_time)
-                continue
+            if "404" in error_str:
+                status_msg.caption(f"⚠️ {model_name} not found. Skipping...")
+            elif "quota" in error_str or "429" in error_str:
+                status_msg.caption(f"⚠️ {model_name} quota exceeded. Switching to cheaper model...")
             else:
-                raise e
+                status_msg.caption(f"⚠️ {model_name} error: {str(e)[:50]}...")
+            
+            last_error = e
+            continue # Loop to next model in list
+
+    # If ALL models fail
+    st.error(f"❌ All AI Models Failed. Last Error: {last_error}")
     return None
 
 # --- HELPER: EXTRACT TEXT FROM PDF ---
@@ -84,7 +109,8 @@ def extract_text_from_pdf(pdf_bytes):
         reader = pypdf.PdfReader(pdf_file)
         text = ""
         for page in reader.pages:
-            text += page.extract_text() + "\n"
+            if page.extract_text():
+                text += page.extract_text() + "\n"
         return text
     except Exception as e:
         print(f"Text extraction failed: {e}")
@@ -99,56 +125,6 @@ def clean_json(text):
         return json.loads(text)
     except:
         return None
-
-# --- ANALYSIS ENGINE ---
-def analyze_pdf(pdf_bytes):
-    api_key = st.secrets["gemini_api_key"]
-    genai.configure(api_key=api_key)
-    
-    # 1. AUTO-SELECT BEST AVAILABLE MODEL (3.0 or 2.5)
-    model_name = get_best_model(api_key)
-    print(f"Selected Model: {model_name}")
-    st.toast(f"Using Brain: {model_name}") # Show user which brain is working
-    
-    prompt_text = """
-    Act as a Senior Financial Analyst. Extract data from this earnings report.
-    
-    TASK 1: FINANCIALS (Normalize to INR Crores. If Mn, divide by 10).
-    JSON Keys: interest_income, interest_expense, nii, other_income, total_income, opex, ppop, provisions, pbt, tax, pat, aum, gnpa_percent, nnpa_percent.
-    
-    TASK 2: STRATEGY (1 sentence summary).
-    JSON Keys: ai_digital, hr_people, geography, credit_borrowings, partnerships, leadership, product_mix, customer_eng, new_initiatives, productivity.
-    
-    OUTPUT: Single JSON object with keys "financials" and "strategy".
-    """
-
-    model = genai.GenerativeModel(model_name)
-
-    # Strategy: Hybrid (PDF Direct -> Text Fallback)
-    # Gemini 3 and 2.5 are excellent at handling raw PDFs, so we try that first.
-    try:
-        # print(f"Attempting Direct PDF Read with {model_name}...")
-        # response = call_gemini_with_retry(model, [{"mime_type": "application/pdf", "data": pdf_bytes}, prompt_text])
-        # if response: return clean_json(response.text)
-        
-        # NOTE: For maximum reliability across all versions, we stick to Text Extraction
-        # because it never fails on file-size limits.
-        print(f"Attempting Text Extraction with {model_name}...")
-        text_content = extract_text_from_pdf(pdf_bytes)
-        
-        if not text_content:
-            st.error("PDF appears to be empty or scanned images.")
-            return None
-        
-        response = call_gemini_with_retry(model, [prompt_text, text_content])
-        if response:
-            return clean_json(response.text)
-            
-    except Exception as e:
-        st.error(f"Analysis failed: {e}")
-        return None
-    
-    return None
 
 # --- DRIVE & SHEETS ---
 def find_file(comp, qtr):
@@ -207,7 +183,7 @@ if st.button("🚀 Analyze Document"):
         pdf = find_file(comp, qtr)
         
         if pdf:
-            st.write("🧠 Engaging Gemini 3.0 / 2.5 Brain...")
+            st.write("🧠 Thinking...")
             data = analyze_pdf(pdf)
             
             if data:
@@ -217,6 +193,6 @@ if st.button("🚀 Analyze Document"):
                     st.json(data)
                     status.update(label="Complete", state="complete")
             else:
-                st.error("AI failed. Please check the logs.")
+                st.warning("Analysis stopped. See error details above.")
         else:
             st.error(f"File not found in Drive. Looked for name containing: '{comp}' AND '{qtr}'")
