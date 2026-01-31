@@ -3,14 +3,23 @@ import pandas as pd
 import google.generativeai as genai
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 import gspread
 import io
 import json
 import pypdf
 import time
 
-# --- CONFIG ---
+# --- CONFIGURATION ---
 st.set_page_config(page_title="NBFC Master Vault", layout="wide")
+
+# Fixed Lists for "All Periods" Logic
+# This list is used when "Strategic Analysis" is selected to force a historical view
+TRACKED_QUARTERS = [
+    "Q3FY26", "Q2FY26", "Q1FY26", 
+    "Q4FY25", "Q3FY25", "Q2FY25", "Q1FY25", 
+    "FY24"
+]
 
 # --- AUTHENTICATION ---
 def get_gspread_client():
@@ -75,11 +84,29 @@ def get_existing_data(worksheet, quarter):
     try:
         all_records = worksheet.get_all_records()
         df = pd.DataFrame(all_records)
-        return df[df["Quarter"] == quarter].iloc[0].to_dict()
+        if df.empty: return None
+        row = df[df["Quarter"] == quarter]
+        if not row.empty:
+            return row.iloc[0].to_dict()
+        return None
     except:
         return None
 
-# --- NEW BULLETPROOF AI ENGINE ---
+def save_to_sheet(worksheet, data, quarter):
+    """Saves the AI extracted data into the sheet."""
+    # Prepare row in exact order of headers
+    row = [
+        quarter,
+        data.get("NIM_Spreads"), data.get("Fee_Income_Ratio"), data.get("Cost_to_Income"), data.get("RoA"), data.get("RoE"), data.get("Credit_Cost"),
+        data.get("GNPA"), data.get("NNPA"), data.get("Stage_2_Assets"), data.get("Stage_3_Assets"), data.get("Collection_Efficiency"), data.get("Concentration_Risk"),
+        data.get("AUM_Growth"), data.get("Disbursement_Velocity"), data.get("Co_Lending_Share"), data.get("Product_Strategy"),
+        data.get("Cost_of_Funds"), data.get("Liability_Mix"), data.get("ALM_Gap"), data.get("Direct_Assignment"),
+        data.get("Digital_Sourcing_Percent"), data.get("Productivity_Metrics"), data.get("Tech_Stack_AI"), data.get("Customer_Friction_TAT"),
+        data.get("Capital_Adequacy_CRAR"), data.get("Regulatory_Standing"), data.get("Leadership_Depth"), data.get("ESG_Score")
+    ]
+    worksheet.append_row(row)
+
+# --- BULLETPROOF AI ENGINE ---
 def get_best_model():
     """
     Dynamically finds the best available model for your API key.
@@ -90,7 +117,6 @@ def get_best_model():
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         
         # 2. Define our Dream Team (Best to Worst)
-        # Note: We use partial string matching to catch versions like 'gemini-1.5-flash-001'
         priority_list = [
             "gemini-3",          # Future proofing
             "gemini-2.5",        # High end 2026 model
@@ -104,7 +130,8 @@ def get_best_model():
         for priority in priority_list:
             for real_model in available_models:
                 if priority in real_model:
-                    return real_model # Return the exact system name (e.g. models/gemini-1.5-flash-001)
+                    # Return the exact system name (e.g. models/gemini-1.5-flash-001)
+                    return real_model 
         
         # 4. If no priority match, just take the first one that works
         if available_models:
@@ -133,7 +160,6 @@ def analyze_pdf(pdf_bytes, competitor):
             
     # 2. Auto-Select the Best Available Model
     model_name = get_best_model()
-    # st.write(f"DEBUG: Using AI Brain: {model_name}") # Uncomment to see which model is picked
     
     # 6-PILLAR PROMPT
     prompt = f"""
@@ -192,7 +218,7 @@ def analyze_pdf(pdf_bytes, competitor):
     If data is missing, put "Not Disclosed". Keep text concise (max 2 sentences per field).
     """
 
-    # 3. Execute with Retry Logic (Handles Glitches/Timeouts)
+    # 3. Execute with Retry Logic
     try:
         model = genai.GenerativeModel(model_name)
         response = model.generate_content([prompt, text])
@@ -207,13 +233,11 @@ def analyze_pdf(pdf_bytes, competitor):
         return json.loads(raw_text)
         
     except Exception as e:
-        # Emergency Fallback: If the "Best" model crashed, try the "Safest" one (1.5 Flash)
+        # Fallback to safety net if primary fails
         if "404" in str(e) or "not found" in str(e).lower():
             try:
-                # st.warning("Primary model failed. Switching to Safety Net (Gemini 1.5 Flash)...")
-                model = genai.GenerativeModel("models/gemini-1.5-flash") # Hardcoded safety net
+                model = genai.GenerativeModel("models/gemini-1.5-flash")
                 response = model.generate_content([prompt, text])
-                
                 raw_text = response.text
                 if "```json" in raw_text:
                     raw_text = raw_text.split("```json")[1].split("```")[0]
@@ -227,141 +251,169 @@ def analyze_pdf(pdf_bytes, competitor):
             st.error(f"AI Analysis Failed: {e}")
             return None
 
-# --- SAVING TO SHEET ---
-def save_to_sheet(worksheet, data, quarter):
-    # Prepare row in exact order of headers
-    row = [
-        quarter,
-        data.get("NIM_Spreads"), data.get("Fee_Income_Ratio"), data.get("Cost_to_Income"), data.get("RoA"), data.get("RoE"), data.get("Credit_Cost"),
-        data.get("GNPA"), data.get("NNPA"), data.get("Stage_2_Assets"), data.get("Stage_3_Assets"), data.get("Collection_Efficiency"), data.get("Concentration_Risk"),
-        data.get("AUM_Growth"), data.get("Disbursement_Velocity"), data.get("Co_Lending_Share"), data.get("Product_Strategy"),
-        data.get("Cost_of_Funds"), data.get("Liability_Mix"), data.get("ALM_Gap"), data.get("Direct_Assignment"),
-        data.get("Digital_Sourcing_Percent"), data.get("Productivity_Metrics"), data.get("Tech_Stack_AI"), data.get("Customer_Friction_TAT"),
-        data.get("Capital_Adequacy_CRAR"), data.get("Regulatory_Standing"), data.get("Leadership_Depth"), data.get("ESG_Score")
-    ]
-    worksheet.append_row(row)
-
 # --- DRIVE SEARCH ---
 def find_file(comp, qtr):
     service = get_drive_service()
-    query = f"name contains '{comp}' and name contains '{qtr}' and mimeType = 'application/pdf'"
+    # Loose match search for robustness
+    query = f"name contains '{comp}' and name contains '{qtr}' and mimeType = 'application/pdf' and trashed = false"
     results = service.files().list(q=query, fields="files(id, name)").execute()
     files = results.get('files', [])
+    
     if not files: return None
+    
+    # Download
     request = service.files().get_media(fileId=files[0]['id'])
     fh = io.BytesIO()
-    downloader = build('drive', 'v3', credentials=service._http.credentials).files().get_media(fileId=files[0]['id'])
-    # Simple download
-    return request.execute()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done: _, done = downloader.next_chunk()
+    return fh.getvalue()
 
-# --- UI & LOGIC ---
-st.title("🏦 NBFC Strategy Command Center")
+# --- MAIN UI ---
+st.title("🏦 Executive NBFC Vault")
+st.markdown("---")
 
-# 1. SIDEBAR CONTROLS
-mode = st.sidebar.radio("Analysis Mode", ["Financial Analysis (Tables)", "Strategic Analysis (Insights)"])
+# 1. INPUT SECTION
+with st.container():
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        st.subheader("Configuration")
+        analysis_mode = st.radio("Select Analysis Type:", ["Financial Analysis", "Strategic Analysis"])
+        
+        # SHARED INPUT: Competitors
+        selected_competitors = st.multiselect(
+            "Select Competitors", 
+            ["SBFC","Poonawala","FedFina","Bajaj Finance", "SK Finance", "Shriram", "Kogta", "Tata Capital", "Muthoot"],
+            default=["Bajaj Finance"]
+        )
 
-# Competitor Selection (Multi-Select)
-competitors = st.sidebar.multiselect("Select Competitors", ["SBFC","Poonawala","FedFina","Bajaj Finance", "SK Finance", "Shriram", "Kogta", "Tata Capital", "Muthoot"], default=["Bajaj Finance"])
-quarters = st.sidebar.multiselect("Select Quarters", ["Q3FY25", "Q2FY25","Q1FY25","Q4FY25","Q1FY26","Q2FY26","Q3FY26","Q4FY26"], default=["Q3FY26"])
+    with col2:
+        st.subheader("Parameters")
+        if analysis_mode == "Financial Analysis":
+            # Financial Mode: Needs Specific Quarters
+            selected_quarters = st.multiselect(
+                "Select Quarters", 
+                TRACKED_QUARTERS,
+                default=["Q3FY25"]
+            )
+            selected_theme = None # Not used
+            
+        else:
+            # Strategic Mode: Needs Theme, uses ALL quarters automatically
+            st.info("ℹ️ Strategic Mode automatically analyzes historical trends across all tracked periods.")
+            selected_theme = st.selectbox(
+                "Select Strategic Pillar",
+                ["Financial Health", "Asset Quality", "Growth Engine", "Funding & Liquidity", "Digital & Tech", "Soft Power"]
+            )
+            selected_quarters = TRACKED_QUARTERS # Force all quarters
 
-if st.sidebar.button("Run Analysis"):
+    # THE TRIGGER
+    st.markdown("###")
+    start_btn = st.button("🚀 Generate Analysis Report", type="primary")
+
+# --- EXECUTION LOGIC ---
+if start_btn:
+    if not selected_competitors:
+        st.error("Please select at least one competitor.")
+        st.stop()
+
     gc = get_gspread_client()
     sh = gc.open_by_key(st.secrets["sheet_id"])
     
-    st.write("---")
-    
-    # Loop through every requested Competitor & Quarter
-    for comp in competitors:
-        # Get specific tab for this competitor
+    # Store results for display
+    final_results = {}
+
+    # PROGRESS BAR
+    progress_text = "Initializing..."
+    my_bar = st.progress(0, text=progress_text)
+    total_steps = len(selected_competitors) * len(selected_quarters)
+    step_count = 0
+
+    for comp in selected_competitors:
         ws = get_or_create_tab(sh, comp)
+        comp_data = [] # List to hold data for this competitor
         
-        for qtr in quarters:
-            with st.status(f"Processing {comp} - {qtr}...", expanded=True) as status:
+        for qtr in selected_quarters:
+            step_count += 1
+            my_bar.progress(step_count / total_steps, text=f"Processing {comp} | {qtr}...")
+            
+            # STEP 1: CHECK DB
+            db_data = get_existing_data(ws, qtr)
+            
+            if db_data:
+                # Data Exists -> Use it
+                comp_data.append(db_data)
+            else:
+                # STEP 2: IF MISSING -> FIND PDF & ANALYZE
+                pdf_bytes = find_file(comp, qtr)
                 
-                # STEP 1: CHECK IF DATA EXISTS
-                st.write("🔍 Checking Master Database...")
-                if check_data_exists(ws, qtr):
-                    st.success(f"✅ Data found for {comp} {qtr}. Skipping AI Analysis.")
-                    data = get_existing_data(ws, qtr)
+                if pdf_bytes:
+                    ai_data = analyze_pdf(pdf_bytes, comp)
+                    if ai_data:
+                        # Add Quarter to data before saving
+                        save_to_sheet(ws, ai_data, qtr)
+                        # Add Quarter to dict for display
+                        ai_data["Quarter"] = qtr 
+                        comp_data.append(ai_data) # Add to current list
                 else:
-                    # STEP 2: IF NOT, RUN AI
-                    st.write("📂 Data missing. Searching Drive for PDF...")
-                    pdf_bytes = find_file(comp, qtr)
-                    
-                    if pdf_bytes:
-                        st.write("🧠 Analyzing 6 Strategic Pillars...")
-                        data = analyze_pdf(pdf_bytes, comp)
-                        
-                        if data:
-                            st.write("💾 Saving to Master Database...")
-                            save_to_sheet(ws, data, qtr)
-                            st.success("Analysis Complete & Saved.")
-                        else:
-                            st.error("AI Analysis Failed.")
-                            data = None
-                    else:
-                        st.error(f"PDF not found for {comp} {qtr}")
-                        data = None
-                
-                status.update(label="Done", state="complete")
+                    pass # PDF Missing
+        
+        # Store all data found/created for this competitor
+        if comp_data:
+            final_results[comp] = pd.DataFrame(comp_data)
 
-# --- OUTPUT DISPLAY MODES ---
-if mode == "Financial Analysis (Tables)":
-    st.subheader("📊 Financial Performance Matrix")
-    # Fetch all data for selected competitors
-    if st.button("Refresh View"):
-        gc = get_gspread_client()
-        sh = gc.open_by_key(st.secrets["sheet_id"])
-        
-        for comp in competitors:
-            try:
-                ws = sh.worksheet(comp)
-                df = pd.DataFrame(ws.get_all_records())
-                st.write(f"### {comp}")
-                st.dataframe(df)
-            except:
-                st.warning(f"No data yet for {comp}")
+    my_bar.empty()
+    st.success("Analysis Complete!")
+    st.markdown("---")
 
-elif mode == "Strategic Analysis (Insights)":
-    st.subheader("🧠 Strategic Deep Dive")
-    selected_pillar = st.selectbox("Select Strategic Pillar", [
-        "Financial Health", "Asset Quality", "Growth Engine", "Funding & Liquidity", "Digital & Tech", "Soft Power"
-    ])
+    # --- OUTPUT GENERATION (SENIOR MANAGEMENT VIEW) ---
     
-    # Mapping Dropdown to Keys
-    pillar_map = {
-        "Financial Health": ["NIM_Spreads", "Cost_to_Income", "RoA"],
-        "Asset Quality": ["GNPA", "Collection_Efficiency", "Stage_2_Assets"],
-        "Growth Engine": ["AUM_Growth", "Co_Lending_Share", "Product_Strategy"],
-        "Funding & Liquidity": ["Cost_of_Funds", "Liability_Mix", "ALM_Gap"],
-        "Digital & Tech": ["Digital_Sourcing_Percent", "Tech_Stack_AI", "Customer_Friction_TAT"],
-        "Soft Power": ["Leadership_Depth", "ESG_Score", "Regulatory_Standing"]
-    }
-    
-    if st.button("Generate Insight Report"):
-        gc = get_gspread_client()
-        sh = gc.open_by_key(st.secrets["sheet_id"])
+    if analysis_mode == "Financial Analysis":
+        st.header("📊 Financial Performance Matrix")
         
-        # Create a comparison view
-        cols = st.columns(len(competitors))
+        if not final_results:
+            st.warning("No data found for the selected criteria.")
         
-        for idx, comp in enumerate(competitors):
-            with cols[idx]:
-                st.markdown(f"### {comp}")
+        for comp, df in final_results.items():
+            with st.expander(f"📘 {comp} - Financial Overview", expanded=True):
+                if not df.empty and "Quarter" in df.columns:
+                    # Clean display: Quarters as Columns
+                    df = df.set_index("Quarter")
+                    st.dataframe(df.T, use_container_width=True)
+                else:
+                    st.warning("Data structure invalid.")
+
+    elif analysis_mode == "Strategic Analysis":
+        st.header(f"🧠 Strategic Deep Dive: {selected_theme}")
+        
+        # Define Pillar Mapping
+        pillar_map = {
+            "Financial Health": ["NIM_Spreads", "Cost_to_Income", "RoA", "RoE", "Credit_Cost"],
+            "Asset Quality": ["GNPA", "Stage_2_Assets", "Collection_Efficiency", "Concentration_Risk"],
+            "Growth Engine": ["AUM_Growth", "Disbursement_Velocity", "Co_Lending_Share", "Product_Strategy"],
+            "Funding & Liquidity": ["Cost_of_Funds", "Liability_Mix", "ALM_Gap"],
+            "Digital & Tech": ["Digital_Sourcing_Percent", "Tech_Stack_AI", "Customer_Friction_TAT"],
+            "Soft Power": ["Leadership_Depth", "ESG_Score", "Regulatory_Standing"]
+        }
+        
+        target_cols = pillar_map.get(selected_theme, [])
+        
+        if not final_results:
+            st.warning("No data available to generate strategic insights.")
+            
+        for comp, df in final_results.items():
+            st.subheader(f"🏢 {comp}")
+            
+            if not df.empty and "Quarter" in df.columns:
+                # Filter only relevant columns + Quarter
+                cols_to_show = ["Quarter"] + [c for c in target_cols if c in df.columns]
                 try:
-                    ws = sh.worksheet(comp)
-                    df = pd.DataFrame(ws.get_all_records())
-                    
-                    # Filter for selected quarters if available
-                    df_filtered = df[df["Quarter"].isin(quarters)]
-                    
-                    if not df_filtered.empty:
-                        for _, row in df_filtered.iterrows():
-                            st.markdown(f"**{row['Quarter']}**")
-                            for metric in pillar_map[selected_pillar]:
-                                st.markdown(f"**{metric}:** {row.get(metric, '-')}")
-                            st.divider()
-                    else:
-                        st.write("No data for selected quarters.")
-                except:
-                    st.write("No data available.")
+                    subset = df[cols_to_show].set_index("Quarter")
+                    st.table(subset)
+                except KeyError:
+                    st.warning(f"Data missing for some columns in {selected_theme}")
+            else:
+                st.write("Insufficient data.")
+            
+            st.markdown("---")
