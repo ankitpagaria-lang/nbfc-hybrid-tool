@@ -201,8 +201,8 @@ st.title("🏦 NBFC Strategy Command Center")
 mode = st.sidebar.radio("Analysis Mode", ["Financial Analysis (Tables)", "Strategic Analysis (Insights)"])
 
 # Competitor Selection (Multi-Select)
-competitors = st.sidebar.multiselect("Select Competitors", ["Bajaj Finance", "SK Finance", "Shriram", "Kogta", "Tata Capital", "Muthoot"], default=["Bajaj Finance"])
-quarters = st.sidebar.multiselect("Select Quarters", ["Q3FY25", "Q2FY25", "FY24"], default=["Q3FY25"])
+competitors = st.sidebar.multiselect("Select Competitors", ["SBFC","Poonawala","FedFina","Bajaj Finance", "SK Finance", "Shriram", "Kogta", "Tata Capital", "Muthoot"], default=["Bajaj Finance"])
+quarters = st.sidebar.multiselect("Select Quarters", ["Q3FY25", "Q2FY25","Q1FY25","Q4FY25"," "Q1FY26","Q2FY26","Q3FY26","Q4FY26"], default=["Q3FY26"])
 
 if st.sidebar.button("Run Analysis"):
     gc = get_gspread_client()
