@@ -93,23 +93,19 @@ def save_to_sheet(worksheet, data, quarter):
     ]
     worksheet.append_row(row)
 
-# --- BULLETPROOF AI ENGINE ---
+# --- BULLETPROOF AI ENGINE (UPDATED) ---
 def get_best_model():
     """
     Dynamically finds the best available model for your API key.
-    Prioritizes Gemini 3 -> 2.5 -> 1.5 -> Legacy.
     """
     try:
         # Ask Google what models are available to THIS key
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         
+        # Priority: Try to grab the most powerful one first
         priority_list = [
-            "gemini-3",          # Future proofing
-            "gemini-2.5",        # High end 2026 model
-            "gemini-2.0-flash",  # Fast 2.0
-            "gemini-1.5-pro",    # Reliable workhorse
-            "gemini-1.5-flash",  # Fast reliable
-            "gemini-pro"         # Legacy fallback
+            "gemini-3", "gemini-2.5", "gemini-2.0", 
+            "gemini-1.5-pro", "gemini-1.5-flash", "gemini-pro"
         ]
         
         for priority in priority_list:
@@ -123,6 +119,7 @@ def get_best_model():
     except Exception as e:
         print(f"Model listing failed: {e}")
     
+    # Safe default if list fails
     return "models/gemini-1.5-flash"
 
 def analyze_pdf(pdf_bytes, competitor):
@@ -140,8 +137,8 @@ def analyze_pdf(pdf_bytes, competitor):
         st.error(f"PDF Reading Error: {e}")
         return None
             
-    # 2. Auto-Select the Best Available Model
-    model_name = get_best_model()
+    # 2. Pick Primary Model
+    primary_model_name = get_best_model()
     
     # 6-PILLAR PROMPT
     prompt = f"""
@@ -200,46 +197,51 @@ def analyze_pdf(pdf_bytes, competitor):
     If data is missing, put "Not Disclosed". Keep text concise (max 2 sentences per field).
     """
 
-    # 3. Execute with Robust Retry Logic
-    try:
-        model = genai.GenerativeModel(model_name)
-        response = model.generate_content([prompt, text])
-        
-        # Clean JSON
-        raw_text = response.text
-        if "```json" in raw_text:
-            raw_text = raw_text.split("```json")[1].split("```")[0]
-        elif "```" in raw_text:
-            raw_text = raw_text.split("```")[1]
+    # 3. Execute with SURVIVOR FALLBACK LOOP
+    # If the primary fails, we cycle through these known aliases until one works.
+    candidates = [
+        primary_model_name,          # Try the best one first
+        "gemini-1.5-flash",          # Alias 1
+        "gemini-1.5-flash-001",      # Alias 2
+        "gemini-1.5-flash-002",      # Alias 3
+        "gemini-1.5-flash-latest",   # Alias 4
+        "gemini-pro",                # Legacy Alias
+        "models/gemini-pro"          # Legacy Full Path
+    ]
+    
+    # Remove duplicates while preserving order
+    unique_candidates = []
+    seen = set()
+    for c in candidates:
+        if c not in seen:
+            unique_candidates.append(c)
+            seen.add(c)
+
+    last_error = None
+
+    for model_name in unique_candidates:
+        try:
+            # st.toast(f"Trying AI Model: {model_name}...") # Optional: Uncomment to see process
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content([prompt, text])
             
-        return json.loads(raw_text)
-        
-    except Exception as e:
-        error_msg = str(e).lower()
-        
-        # --- THE FIX: CATCH BOTH 404 AND 429 (QUOTA) ERRORS ---
-        if "404" in error_msg or "not found" in error_msg or "429" in error_msg or "quota" in error_msg:
-            try:
-                # Force switch to Flash (the cheapest/safest model)
-                fallback_model = "models/gemini-1.5-flash"
-                # st.toast(f"⚠️ High Traffic. Switching to {fallback_model}...") 
-                
-                model = genai.GenerativeModel(fallback_model)
-                response = model.generate_content([prompt, text])
-                
-                raw_text = response.text
-                if "```json" in raw_text:
-                    raw_text = raw_text.split("```json")[1].split("```")[0]
-                elif "```" in raw_text:
-                    raw_text = raw_text.split("```")[1]
-                return json.loads(raw_text)
-                
-            except Exception as e2:
-                st.error(f"Analysis Failed on Fallback Model: {e2}")
-                return None
-        else:
-            st.error(f"AI Analysis Failed: {e}")
-            return None
+            # Clean JSON
+            raw_text = response.text
+            if "```json" in raw_text:
+                raw_text = raw_text.split("```json")[1].split("```")[0]
+            elif "```" in raw_text:
+                raw_text = raw_text.split("```")[1]
+            
+            return json.loads(raw_text) # If success, return immediately
+            
+        except Exception as e:
+            # If fail, log error and loop to the next candidate
+            last_error = e
+            continue 
+
+    # If we exit the loop, ALL models failed
+    st.error(f"Analysis Failed. All AI models (Best + Fallbacks) were rejected. Last Error: {last_error}")
+    return None
 
 # --- DRIVE SEARCH ---
 def find_file(comp, qtr):
