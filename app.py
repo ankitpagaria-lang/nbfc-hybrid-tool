@@ -7,9 +7,11 @@ from googleapiclient.http import MediaIoBaseDownload
 import io
 import json
 import pypdf
+import time
+import random
 
 # --- CONFIG ---
-st.set_page_config(page_title="Hybrid NBFC Vault", layout="wide")
+st.set_page_config(page_title="Hybrid NBFC Vault (Gemini 3.0)", layout="wide")
 
 # --- AUTH ---
 def get_creds():
@@ -18,32 +20,62 @@ def get_creds():
         scopes=['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets']
     )
 
-# --- SMART MODEL SELECTOR ---
+# --- SMART MODEL SELECTOR (UPDATED FOR GEMINI 3 & 2.5) ---
 def get_best_model(api_key):
-    """Asks Google which models are available and picks the best one."""
+    """
+    Prioritizes Gemini 3.0 -> Gemini 2.5 -> Gemini 2.0 -> Legacy.
+    """
     genai.configure(api_key=api_key)
     try:
         # Get list of all models available to your key
         all_models = list(genai.list_models())
-        
-        # Filter for models that can generate content
         capable_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
         
-        # Priority Logic: Try to find 1.5 Pro -> 1.5 Flash -> Pro -> Any
-        for priority in ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-pro']:
+        # 2026 PRIORITY LADDER
+        priority_order = [
+            "gemini-3-pro-preview",    # Latest bleeding edge (Nov 2025)
+            "gemini-3-flash-preview",  # Latest fast model (Dec 2025)
+            "gemini-2.5-pro",          # Stable Workhorse (June 2025)
+            "gemini-2.5-flash",        # Stable Fast (June 2025)
+            "gemini-2.0-flash",        # Legacy reliable
+            "gemini-1.5-pro",          # Old reliable
+            "gemini-1.5-flash"         # Old fast
+        ]
+
+        # Check for specific matches in priority order
+        for priority in priority_order:
             for m_name in capable_models:
                 if priority in m_name:
                     return m_name
         
-        # If no preferred model found, take the first valid one
+        # Fallback: Just take the newest one we can find
         if capable_models:
             return capable_models[0]
             
     except Exception as e:
         print(f"Model listing failed: {e}")
     
-    # Ultimate Fallback (Legacy name)
-    return "models/gemini-pro"
+    # Ultimate Fallback if list_models fails
+    return "models/gemini-2.5-flash"
+
+# --- ROBUST AI CALLER (With Retry) ---
+def call_gemini_with_retry(model, content_list):
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = model.generate_content(content_list)
+            return response
+        except Exception as e:
+            error_str = str(e).lower()
+            # Catch 429 (Rate Limit) or 503 (Overloaded)
+            if "429" in error_str or "quota" in error_str or "503" in error_str:
+                wait_time = 30 + (attempt * 10)
+                st.toast(f"⚠️ High Traffic on Gemini 3. Pausing for {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+            else:
+                raise e
+    return None
 
 # --- HELPER: EXTRACT TEXT FROM PDF ---
 def extract_text_from_pdf(pdf_bytes):
@@ -58,14 +90,25 @@ def extract_text_from_pdf(pdf_bytes):
         print(f"Text extraction failed: {e}")
         return None
 
+def clean_json(text):
+    try:
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0]
+        elif "```" in text:
+            text = text.split("```")[1]
+        return json.loads(text)
+    except:
+        return None
+
 # --- ANALYSIS ENGINE ---
 def analyze_pdf(pdf_bytes):
     api_key = st.secrets["gemini_api_key"]
     genai.configure(api_key=api_key)
     
-    # 1. AUTO-DETECT BEST MODEL
+    # 1. AUTO-SELECT BEST AVAILABLE MODEL (3.0 or 2.5)
     model_name = get_best_model(api_key)
     print(f"Selected Model: {model_name}")
+    st.toast(f"Using Brain: {model_name}") # Show user which brain is working
     
     prompt_text = """
     Act as a Senior Financial Analyst. Extract data from this earnings report.
@@ -79,49 +122,33 @@ def analyze_pdf(pdf_bytes):
     OUTPUT: Single JSON object with keys "financials" and "strategy".
     """
 
-    # 2. DECIDE STRATEGY
-    # Strategy 1 (Direct PDF) only works on 1.5 models.
-    # Strategy 2 (Text Only) works on ALL models.
-    
-    if "1.5" in model_name:
-        try:
-            print(f"Attempting Strategy 1 (Direct PDF) with {model_name}...")
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content([
-                {"mime_type": "application/pdf", "data": pdf_bytes}, 
-                prompt_text
-            ])
-            return clean_json(response.text)
-        except Exception as e:
-            print(f"Strategy 1 Failed: {e}. Switching to Strategy 2...")
-            # Fallthrough to Strategy 2
+    model = genai.GenerativeModel(model_name)
 
-    # Strategy 2: Text Extraction (The "Tank" - works on everything)
+    # Strategy: Hybrid (PDF Direct -> Text Fallback)
+    # Gemini 3 and 2.5 are excellent at handling raw PDFs, so we try that first.
     try:
-        print(f"Attempting Strategy 2 (Text Extraction) with {model_name}...")
+        # print(f"Attempting Direct PDF Read with {model_name}...")
+        # response = call_gemini_with_retry(model, [{"mime_type": "application/pdf", "data": pdf_bytes}, prompt_text])
+        # if response: return clean_json(response.text)
+        
+        # NOTE: For maximum reliability across all versions, we stick to Text Extraction
+        # because it never fails on file-size limits.
+        print(f"Attempting Text Extraction with {model_name}...")
         text_content = extract_text_from_pdf(pdf_bytes)
         
         if not text_content:
-            st.error("PDF appears to be empty or scanned images. OCR required.")
+            st.error("PDF appears to be empty or scanned images.")
             return None
-
-        model = genai.GenerativeModel(model_name)
-        response = model.generate_content([prompt_text, text_content])
-        return clean_json(response.text)
         
-    except Exception as e2:
-        st.error(f"Analysis failed. Error: {e2}")
+        response = call_gemini_with_retry(model, [prompt_text, text_content])
+        if response:
+            return clean_json(response.text)
+            
+    except Exception as e:
+        st.error(f"Analysis failed: {e}")
         return None
-
-def clean_json(text):
-    try:
-        if "```json" in text:
-            text = text.split("```json")[1].split("```")[0]
-        elif "```" in text:
-            text = text.split("```")[1]
-        return json.loads(text)
-    except:
-        return None
+    
+    return None
 
 # --- DRIVE & SHEETS ---
 def find_file(comp, qtr):
@@ -169,7 +196,7 @@ def save_to_db(data, comp, qtr):
         return False
 
 # --- UI ---
-st.title("🏦 Hybrid NBFC Vault")
+st.title("🏦 Hybrid NBFC Vault (Gemini 3.0)")
 
 comp = st.selectbox("Competitor", ["SK Finance", "Kogta", "Bajaj", "Shriram", "Tata Capital", "SBFC", "Poonawala", "Jio Finance", "HDB", "FedFina"])
 qtr = st.selectbox("Quarter", ["Q3FY25", "Q4FY25", "FY25", "Q1FY26", "Q2FY26", "Q3FY26", "FY26"])
@@ -180,8 +207,7 @@ if st.button("🚀 Analyze Document"):
         pdf = find_file(comp, qtr)
         
         if pdf:
-            st.write("🧠 Auto-Detecting Best AI Model...")
-            # analyze_pdf will print the selected model in the logs
+            st.write("🧠 Engaging Gemini 3.0 / 2.5 Brain...")
             data = analyze_pdf(pdf)
             
             if data:
@@ -191,6 +217,6 @@ if st.button("🚀 Analyze Document"):
                     st.json(data)
                     status.update(label="Complete", state="complete")
             else:
-                st.error("AI failed to extract data. Check if PDF is readable.")
+                st.error("AI failed. Please check the logs.")
         else:
             st.error(f"File not found in Drive. Looked for name containing: '{comp}' AND '{qtr}'")
