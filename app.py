@@ -79,20 +79,61 @@ def get_existing_data(worksheet, quarter):
     except:
         return None
 
-# --- AI ENGINE (6-PILLAR ANALYSIS) ---
+# --- NEW BULLETPROOF AI ENGINE ---
+def get_best_model():
+    """
+    Dynamically finds the best available model for your API key.
+    Prioritizes Gemini 3 -> 2.5 -> 1.5 -> Legacy.
+    """
+    try:
+        # 1. Ask Google what models are available to THIS key
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # 2. Define our Dream Team (Best to Worst)
+        # Note: We use partial string matching to catch versions like 'gemini-1.5-flash-001'
+        priority_list = [
+            "gemini-3",          # Future proofing
+            "gemini-2.5",        # High end 2026 model
+            "gemini-2.0-flash",  # Fast 2.0
+            "gemini-1.5-pro",    # Reliable workhorse
+            "gemini-1.5-flash",  # Fast reliable
+            "gemini-pro"         # Legacy fallback
+        ]
+        
+        # 3. Find the first match
+        for priority in priority_list:
+            for real_model in available_models:
+                if priority in real_model:
+                    return real_model # Return the exact system name (e.g. models/gemini-1.5-flash-001)
+        
+        # 4. If no priority match, just take the first one that works
+        if available_models:
+            return available_models[0]
+            
+    except Exception as e:
+        print(f"Model listing failed: {e}")
+    
+    # Absolute fallback if list_models fails (Manual Guess)
+    return "models/gemini-1.5-flash"
+
 def analyze_pdf(pdf_bytes, competitor):
     genai.configure(api_key=st.secrets["gemini_api_key"])
     
-    # Extract text first (Most reliable method)
-    pdf_file = io.BytesIO(pdf_bytes)
-    reader = pypdf.PdfReader(pdf_file)
-    text = ""
-    for page in reader.pages:
-        if page.extract_text():
-            text += page.extract_text() + "\n"
+    # 1. Extract text (Most reliable method, bypasses file-size limits)
+    try:
+        pdf_file = io.BytesIO(pdf_bytes)
+        reader = pypdf.PdfReader(pdf_file)
+        text = ""
+        for page in reader.pages:
+            if page.extract_text():
+                text += page.extract_text() + "\n"
+    except Exception as e:
+        st.error(f"PDF Reading Error: {e}")
+        return None
             
-    # Priority Model Logic
-    model_name = "gemini-1.5-flash" # Safe default
+    # 2. Auto-Select the Best Available Model
+    model_name = get_best_model()
+    # st.write(f"DEBUG: Using AI Brain: {model_name}") # Uncomment to see which model is picked
     
     # 6-PILLAR PROMPT
     prompt = f"""
@@ -151,6 +192,7 @@ def analyze_pdf(pdf_bytes, competitor):
     If data is missing, put "Not Disclosed". Keep text concise (max 2 sentences per field).
     """
 
+    # 3. Execute with Retry Logic (Handles Glitches/Timeouts)
     try:
         model = genai.GenerativeModel(model_name)
         response = model.generate_content([prompt, text])
@@ -163,9 +205,27 @@ def analyze_pdf(pdf_bytes, competitor):
             raw_text = raw_text.split("```")[1]
             
         return json.loads(raw_text)
+        
     except Exception as e:
-        st.error(f"AI Analysis Failed: {e}")
-        return None
+        # Emergency Fallback: If the "Best" model crashed, try the "Safest" one (1.5 Flash)
+        if "404" in str(e) or "not found" in str(e).lower():
+            try:
+                # st.warning("Primary model failed. Switching to Safety Net (Gemini 1.5 Flash)...")
+                model = genai.GenerativeModel("models/gemini-1.5-flash") # Hardcoded safety net
+                response = model.generate_content([prompt, text])
+                
+                raw_text = response.text
+                if "```json" in raw_text:
+                    raw_text = raw_text.split("```json")[1].split("```")[0]
+                elif "```" in raw_text:
+                    raw_text = raw_text.split("```")[1]
+                return json.loads(raw_text)
+            except Exception as e2:
+                st.error(f"AI Analysis Failed on both primary and backup models: {e2}")
+                return None
+        else:
+            st.error(f"AI Analysis Failed: {e}")
+            return None
 
 # --- SAVING TO SHEET ---
 def save_to_sheet(worksheet, data, quarter):
