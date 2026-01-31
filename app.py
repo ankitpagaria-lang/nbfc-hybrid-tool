@@ -86,7 +86,7 @@ def save_to_db(data, comp, qtr):
 
 # --- UI ---
 st.title("🏦 Hybrid NBFC Vault")
-comp = st.selectbox("Competitor", ["SK Finance", "Kogta", "Bajaj", "Shriram"])
+comp = st.selectbox("Competitor", ["SK Finance", "Kogta", "Bajaj", "Shriram","Tata Capital","SBFC","Poonawala","Jio Finance","HDB","FedFina"])
 qtr = st.selectbox("Quarter", ["Q3FY25", "Q2FY25", "FY24"])
 
 if st.button("🚀 Analyze Document"):
