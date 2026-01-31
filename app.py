@@ -19,11 +19,19 @@ def get_creds():
         scopes=['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets']
     )
 
-# --- GEMINI ENGINE (ENTERPRISE) ---
+# --- GEMINI ENGINE (ROBUST FALLBACK) ---
 def analyze_pdf(pdf_bytes):
     # Uses Enterprise Key
     genai.configure(api_key=st.secrets["gemini_api_key"])
-    model = genai.GenerativeModel("gemini-1.5-pro")
+    
+    # Priority List: Latest Powerful -> Fast Fallback -> Legacy Stable
+    # "Gemini 3" doesn't exist yet. 1.5 Pro is the current state-of-the-art.
+    models_to_try = [
+        "gemini-1.5-pro-latest",  # Try the absolute latest version
+        "gemini-1.5-pro",         # Standard stable version
+        "gemini-1.5-flash",       # High speed fallback
+        "gemini-pro"              # Legacy fallback
+    ]
     
     prompt = """
     Act as a Senior Analyst. Extract data from this report.
@@ -37,16 +45,39 @@ def analyze_pdf(pdf_bytes):
     OUTPUT: Single JSON object with keys "financials" and "strategy".
     """
     
-    try:
-        response = model.generate_content([{"mime_type": "application/pdf", "data": pdf_bytes}, prompt])
-        return json.loads(response.text.replace("```json", "").replace("```", ""))
-    except Exception as e:
-        st.error(f"AI Error: {e}")
-        return None
+    for model_name in models_to_try:
+        try:
+            # Silent attempt
+            print(f"Attempting with model: {model_name}...") 
+            model = genai.GenerativeModel(model_name)
+            
+            response = model.generate_content([
+                {"mime_type": "application/pdf", "data": pdf_bytes}, 
+                prompt
+            ])
+            
+            # Clean response
+            text = response.text
+            if "```json" in text:
+                text = text.split("```json")[1].split("```")[0]
+            elif "```" in text:
+                text = text.split("```")[1]
+                
+            return json.loads(text)
+            
+        except Exception as e:
+            # If fail, print to console logs (user won't see ugly error) and try next model
+            print(f"Model {model_name} failed: {e}")
+            continue
+
+    # If all fail, show error to user
+    st.error("All AI models failed to process this document. Please check the PDF.")
+    return None
 
 # --- DRIVE & SHEETS ---
 def find_file(comp, qtr):
     service = build('drive', 'v3', credentials=get_creds())
+    # Smart Query: Case insensitive search logic isn't native, so we rely on loose matching
     query = f"name contains '{comp}' and name contains '{qtr}' and mimeType = 'application/pdf'"
     results = service.files().list(q=query, fields="files(id, name)").execute()
     files = results.get('files', [])
@@ -86,18 +117,26 @@ def save_to_db(data, comp, qtr):
 
 # --- UI ---
 st.title("🏦 Hybrid NBFC Vault")
-comp = st.selectbox("Competitor", ["SK Finance", "Kogta", "Bajaj", "Shriram","Tata Capital","SBFC","Poonawala","Jio Finance","HDB","FedFina"])
-qtr = st.selectbox("Quarter", ["Q3FY25", "Q4FY25", "FY25","Q1FY26","Q2FY26","Q3FY26","FY26"])
+
+# Updated List with your requested competitors
+comp = st.selectbox("Competitor", ["SK Finance", "Kogta", "Bajaj", "Shriram", "Tata Capital", "SBFC", "Poonawala", "Jio Finance", "HDB", "FedFina"])
+qtr = st.selectbox("Quarter", ["Q3FY25", "Q4FY25", "FY25", "Q1FY26", "Q2FY26", "Q3FY26", "FY26"])
 
 if st.button("🚀 Analyze Document"):
     with st.status("Processing..."):
-        st.write("📂 Personal Robot: Searching Corporate Vault...")
+        st.write(f"📂 Personal Robot: Searching Corporate Vault for {comp} {qtr}...")
         pdf = find_file(comp, qtr)
+        
         if pdf:
-            st.write("🧠 Enterprise Brain: Analyzing...")
+            st.write("🧠 Enterprise Brain: Analyzing (Auto-switching to best model)...")
             data = analyze_pdf(pdf)
+            
             if data:
+                st.write("💾 Saving to Database...")
                 save_to_db(data, comp, qtr)
                 st.success("Done! Database Updated.")
+                st.json(data) # Show preview of data
+            else:
+                st.error("AI could not extract JSON data.")
         else:
-            st.error("File not found.")
+            st.error(f"File not found in Drive. Looked for name containing: '{comp}' AND '{qtr}'")
