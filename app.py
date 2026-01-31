@@ -14,7 +14,6 @@ import time
 st.set_page_config(page_title="NBFC Master Vault", layout="wide")
 
 # Fixed Lists for "All Periods" Logic
-# This list is used when "Strategic Analysis" is selected to force a historical view
 TRACKED_QUARTERS = [
     "Q3FY26", "Q2FY26", "Q1FY26", 
     "Q4FY25", "Q3FY25", "Q2FY25", "Q1FY25", 
@@ -68,17 +67,6 @@ def get_or_create_tab(sheet, tab_name):
         worksheet.append_row(headers)
         return worksheet
 
-def check_data_exists(worksheet, quarter):
-    """Returns True if data for this Quarter already exists in the tab."""
-    try:
-        # Column 1 is always Quarter
-        existing_quarters = worksheet.col_values(1)
-        if quarter in existing_quarters:
-            return True
-        return False
-    except:
-        return False
-
 def get_existing_data(worksheet, quarter):
     """Fetches the row for the existing quarter."""
     try:
@@ -94,7 +82,6 @@ def get_existing_data(worksheet, quarter):
 
 def save_to_sheet(worksheet, data, quarter):
     """Saves the AI extracted data into the sheet."""
-    # Prepare row in exact order of headers
     row = [
         quarter,
         data.get("NIM_Spreads"), data.get("Fee_Income_Ratio"), data.get("Cost_to_Income"), data.get("RoA"), data.get("RoE"), data.get("Credit_Cost"),
@@ -113,10 +100,9 @@ def get_best_model():
     Prioritizes Gemini 3 -> 2.5 -> 1.5 -> Legacy.
     """
     try:
-        # 1. Ask Google what models are available to THIS key
+        # Ask Google what models are available to THIS key
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         
-        # 2. Define our Dream Team (Best to Worst)
         priority_list = [
             "gemini-3",          # Future proofing
             "gemini-2.5",        # High end 2026 model
@@ -126,27 +112,23 @@ def get_best_model():
             "gemini-pro"         # Legacy fallback
         ]
         
-        # 3. Find the first match
         for priority in priority_list:
             for real_model in available_models:
                 if priority in real_model:
-                    # Return the exact system name (e.g. models/gemini-1.5-flash-001)
                     return real_model 
         
-        # 4. If no priority match, just take the first one that works
         if available_models:
             return available_models[0]
             
     except Exception as e:
         print(f"Model listing failed: {e}")
     
-    # Absolute fallback if list_models fails (Manual Guess)
     return "models/gemini-1.5-flash"
 
 def analyze_pdf(pdf_bytes, competitor):
     genai.configure(api_key=st.secrets["gemini_api_key"])
     
-    # 1. Extract text (Most reliable method, bypasses file-size limits)
+    # 1. Extract text
     try:
         pdf_file = io.BytesIO(pdf_bytes)
         reader = pypdf.PdfReader(pdf_file)
@@ -218,7 +200,7 @@ def analyze_pdf(pdf_bytes, competitor):
     If data is missing, put "Not Disclosed". Keep text concise (max 2 sentences per field).
     """
 
-    # 3. Execute with Retry Logic
+    # 3. Execute with Robust Retry Logic
     try:
         model = genai.GenerativeModel(model_name)
         response = model.generate_content([prompt, text])
@@ -233,19 +215,27 @@ def analyze_pdf(pdf_bytes, competitor):
         return json.loads(raw_text)
         
     except Exception as e:
-        # Fallback to safety net if primary fails
-        if "404" in str(e) or "not found" in str(e).lower():
+        error_msg = str(e).lower()
+        
+        # --- THE FIX: CATCH BOTH 404 AND 429 (QUOTA) ERRORS ---
+        if "404" in error_msg or "not found" in error_msg or "429" in error_msg or "quota" in error_msg:
             try:
-                model = genai.GenerativeModel("models/gemini-1.5-flash")
+                # Force switch to Flash (the cheapest/safest model)
+                fallback_model = "models/gemini-1.5-flash"
+                # st.toast(f"⚠️ High Traffic. Switching to {fallback_model}...") 
+                
+                model = genai.GenerativeModel(fallback_model)
                 response = model.generate_content([prompt, text])
+                
                 raw_text = response.text
                 if "```json" in raw_text:
                     raw_text = raw_text.split("```json")[1].split("```")[0]
                 elif "```" in raw_text:
                     raw_text = raw_text.split("```")[1]
                 return json.loads(raw_text)
+                
             except Exception as e2:
-                st.error(f"AI Analysis Failed on both primary and backup models: {e2}")
+                st.error(f"Analysis Failed on Fallback Model: {e2}")
                 return None
         else:
             st.error(f"AI Analysis Failed: {e}")
