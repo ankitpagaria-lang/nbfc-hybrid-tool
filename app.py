@@ -93,35 +93,7 @@ def save_to_sheet(worksheet, data, quarter):
     ]
     worksheet.append_row(row)
 
-# --- BULLETPROOF AI ENGINE (UPDATED) ---
-def get_best_model():
-    """
-    Dynamically finds the best available model for your API key.
-    """
-    try:
-        # Ask Google what models are available to THIS key
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # Priority: Try to grab the most powerful one first
-        priority_list = [
-            "gemini-3", "gemini-2.5", "gemini-2.0", 
-            "gemini-1.5-pro", "gemini-1.5-flash", "gemini-pro"
-        ]
-        
-        for priority in priority_list:
-            for real_model in available_models:
-                if priority in real_model:
-                    return real_model 
-        
-        if available_models:
-            return available_models[0]
-            
-    except Exception as e:
-        print(f"Model listing failed: {e}")
-    
-    # Safe default if list fails
-    return "models/gemini-1.5-flash"
-
+# --- BULLETPROOF AI ENGINE (INVENTORY BASED) ---
 def analyze_pdf(pdf_bytes, competitor):
     genai.configure(api_key=st.secrets["gemini_api_key"])
     
@@ -137,9 +109,29 @@ def analyze_pdf(pdf_bytes, competitor):
         st.error(f"PDF Reading Error: {e}")
         return None
             
-    # 2. Pick Primary Model
-    primary_model_name = get_best_model()
-    
+    # 2. GET VALID MODELS FROM GOOGLE (NO GUESSING)
+    # This prevents 404 errors by asking "What exactly do I have?"
+    try:
+        all_models = list(genai.list_models())
+        valid_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
+        
+        # Sort them so we try the best ones first (1.5 Flash -> 1.5 Pro -> Others)
+        def model_priority(name):
+            if "1.5-flash" in name: return 0  # Top Priority (Fast/Free)
+            if "1.5-pro" in name: return 1    # Second Priority
+            if "gemini-pro" in name: return 2
+            return 3 # Everything else
+            
+        valid_models.sort(key=model_priority)
+        
+        if not valid_models:
+             st.error("Your API Key has no access to any generative models.")
+             return None
+             
+    except Exception as e:
+        st.error(f"Failed to fetch model list: {e}")
+        return None
+
     # 6-PILLAR PROMPT
     prompt = f"""
     You are a Senior Banking Analyst analyzing {competitor}. Extract data strictly into JSON.
@@ -197,31 +189,11 @@ def analyze_pdf(pdf_bytes, competitor):
     If data is missing, put "Not Disclosed". Keep text concise (max 2 sentences per field).
     """
 
-    # 3. Execute with SURVIVOR FALLBACK LOOP
-    # If the primary fails, we cycle through these known aliases until one works.
-    candidates = [
-        primary_model_name,          # Try the best one first
-        "gemini-1.5-flash",          # Alias 1
-        "gemini-1.5-flash-001",      # Alias 2
-        "gemini-1.5-flash-002",      # Alias 3
-        "gemini-1.5-flash-latest",   # Alias 4
-        "gemini-pro",                # Legacy Alias
-        "models/gemini-pro"          # Legacy Full Path
-    ]
-    
-    # Remove duplicates while preserving order
-    unique_candidates = []
-    seen = set()
-    for c in candidates:
-        if c not in seen:
-            unique_candidates.append(c)
-            seen.add(c)
-
+    # 3. SURVIVOR LOOP (Try every valid model until one works)
     last_error = None
-
-    for model_name in unique_candidates:
+    
+    for model_name in valid_models:
         try:
-            # st.toast(f"Trying AI Model: {model_name}...") # Optional: Uncomment to see process
             model = genai.GenerativeModel(model_name)
             response = model.generate_content([prompt, text])
             
@@ -232,15 +204,15 @@ def analyze_pdf(pdf_bytes, competitor):
             elif "```" in raw_text:
                 raw_text = raw_text.split("```")[1]
             
-            return json.loads(raw_text) # If success, return immediately
+            return json.loads(raw_text) # Success! Return immediately.
             
         except Exception as e:
-            # If fail, log error and loop to the next candidate
+            # If a model fails (Quota or Error), we just try the next valid one
             last_error = e
             continue 
 
-    # If we exit the loop, ALL models failed
-    st.error(f"Analysis Failed. All AI models (Best + Fallbacks) were rejected. Last Error: {last_error}")
+    # If we exit the loop, everything failed
+    st.error(f"Analysis Failed. Last Error: {last_error}")
     return None
 
 # --- DRIVE SEARCH ---
