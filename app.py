@@ -16,8 +16,7 @@ st.set_page_config(page_title="NBFC Master Vault", layout="wide")
 # Fixed Lists for "All Periods" Logic
 TRACKED_QUARTERS = [
     "Q3FY26", "Q2FY26", "Q1FY26", 
-    "Q4FY25", "Q3FY25", "Q2FY25", "Q1FY25", 
-    "FY24"
+    "Q4FY25"
 ]
 
 # --- STRATEGIC PILLAR MAPPING ---
@@ -134,7 +133,7 @@ def analyze_content(combined_text, competitor):
 
     # 6-PILLAR PROMPT - REFINED FOR TRANSCRIPTS
     prompt = f"""
-    You are a Senior Banking Analyst analyzing {competitor}. 
+    You are a BCG and Top tier Consulting Organization Partner and Consultant analyzing {competitor}. 
     I have provided text from the **Investor Presentation AND/OR Earnings Call Transcript**.
     
     Synthesize information from both sources. 
@@ -193,7 +192,7 @@ def analyze_content(combined_text, competitor):
         "Digital_Sourcing_Percent": "...", "Productivity_Metrics": "...", "Tech_Stack_AI": "...", "Customer_Friction_TAT": "...",
         "Capital_Adequacy_CRAR": "...", "Regulatory_Standing": "...", "Leadership_Depth": "...", "ESG_Score": "..."
     }}
-    If data is missing, put "Not Disclosed". Keep text concise (max 2-3 sentences per field).
+    If data is missing, put "Not Disclosed". Keep text concise (max 4-5 sentences per field).
     """
 
     # 3. SURVIVOR LOOP
@@ -280,8 +279,8 @@ with st.container():
         # SHARED INPUT: Competitors
         selected_competitors = st.multiselect(
             "Select Competitors", 
-            ["SBFC","Poonawala","FedFina","Bajaj Finance", "SK Finance", "Shriram", "Kogta", "Tata Capital", "Muthoot"],
-            default=["Bajaj Finance", "Shriram"]
+            ["SBFC","Poonawala","FedFina","Tata Capital", "HDB"],
+            default=["SBFC",]
         )
 
     with col2:
