@@ -48,34 +48,17 @@ def get_drive_service():
     )
     return build('drive', 'v3', credentials=creds)
 
-# --- SMART DATABASE MANAGER ---
-def get_or_create_tab(sheet, tab_name):
-    """Checks if a tab exists for the NBFC. If not, creates it with 6-Pillar Headers."""
+# --- STRICT DATABASE MANAGER ---
+def get_tab_if_exists(sheet, tab_name):
+    """
+    STRICT CHECK: Returns the worksheet if it exists. 
+    Returns None if it does not exist (DOES NOT CREATE).
+    """
     try:
         worksheet = sheet.worksheet(tab_name)
         return worksheet
     except gspread.exceptions.WorksheetNotFound:
-        # Create new tab
-        worksheet = sheet.add_worksheet(title=tab_name, rows=100, cols=50)
-        
-        # DEFINING THE MASTER HEADERS (Financials + 6 Pillars)
-        headers = [
-            "Quarter", 
-            # Pillar 1: Financial Health
-            "NIM_Spreads", "Fee_Income_Ratio", "Cost_to_Income", "RoA", "RoE", "Credit_Cost",
-            # Pillar 2: Asset Quality
-            "GNPA", "NNPA", "Stage_2_Assets", "Stage_3_Assets", "Collection_Efficiency", "Concentration_Risk",
-            # Pillar 3: Growth
-            "AUM_Growth", "Disbursement_Velocity", "Co_Lending_Share", "Product_Strategy",
-            # Pillar 4: Funding
-            "Cost_of_Funds", "Liability_Mix", "ALM_Gap", "Direct_Assignment",
-            # Pillar 5: Digital
-            "Digital_Sourcing_Percent", "Productivity_Metrics", "Tech_Stack_AI", "Customer_Friction_TAT",
-            # Pillar 6: Soft Power
-            "Capital_Adequacy_CRAR", "Regulatory_Standing", "Leadership_Depth", "ESG_Score"
-        ]
-        worksheet.append_row(headers)
-        return worksheet
+        return None 
 
 def get_existing_data(worksheet, quarter):
     """Fetches the row for the existing quarter."""
@@ -134,7 +117,7 @@ def analyze_content(combined_text, competitor):
 
     # 6-PILLAR PROMPT - HYBRID CONCISENESS RULE
     prompt = f"""
-    You are a Senior Strategic Analyst analyzing {competitor}. 
+    You are a BCG Partner analyzing {competitor}. 
     I have provided text from the **Investor Presentation AND/OR Earnings Call Transcript**.
     
     Synthesize information from both sources. 
@@ -146,10 +129,10 @@ def analyze_content(combined_text, competitor):
        - Format: "Value (YoY/QoQ change)".
        - Example: "2.5% (down 10bps QoQ)" 
 
-    2. **STRATEGIC/NON-FINANCIAL METRICS (Strategy, Tech, Leadership, ESG):**
-       - ALLOW CONTEXT. You can use 2-3 sentences.
-       - Explain the "Why" and "How".
-       - Example: "Launched 'Udaan' app for rural market to reduce acquisition costs by 15%. Focus on Tier-3 cities."
+    2. **STRATEGIC/NON-FINANCIAL METRICS (Growth, Digital, Soft Power, etc.):**
+       - **PROVIDE COMMENTARY.** Use 2-3 sentences.
+       - Explain the "Why" and "How" based on the transcript.
+       - Example: "Launched 'Udaan' app for rural market to reduce acquisition costs by 15%. CEO emphasized focus on Tier-3 cities due to saturation in metros."
 
     EXTRACT DATA STRICTLY INTO JSON.
 
@@ -268,7 +251,6 @@ def find_and_extract_all_docs(comp, qtr):
             except:
                 pass # Skip unreadable files
         
-        # print(f"DEBUG: Found {len(files)} files: {files_found}")
         return full_combined_text
 
     except Exception as e:
@@ -305,7 +287,7 @@ with st.container():
                 default=[TRACKED_QUARTERS[0]]
             )
             # Default Financial Pillars
-            selected_pillars = ["Financial Health", "Funding & Liquidity"] 
+            selected_pillars = ["Financial Health", "Funding & Liquidity", "Asset Quality"] 
             
         else:
             # Strategic Mode: MULTI-SELECT for Pillars and Quarters
@@ -343,33 +325,42 @@ if start_btn:
     step_count = 0
 
     for comp in selected_competitors:
-        ws = get_or_create_tab(sh, comp)
+        # STRICT CHECK: Only proceed if TAB EXISTS
+        ws = get_tab_if_exists(sh, comp)
+        
         comp_data = [] # List to hold data for this competitor
         
-        for qtr in selected_quarters:
-            step_count += 1
-            my_bar.progress(step_count / total_steps, text=f"Processing {comp} | {qtr}...")
-            
-            # STEP 1: CHECK DB
-            db_data = get_existing_data(ws, qtr)
-            
-            if db_data:
-                # Data Exists -> Use it
-                comp_data.append(db_data)
-            else:
-                # STEP 2: IF MISSING -> FIND ALL PDFS (Pres + Transcript) & ANALYZE
-                combined_text = find_and_extract_all_docs(comp, qtr)
+        if not ws:
+            # Tab doesn't exist -> SKIP
+            st.toast(f"⚠️ No database record found for {comp}. Skipping.")
+            # We do NOT search PDFs or create tabs. We just skip.
+        else:
+            # Tab Exists -> Proceed to check for Quarter Data
+            for qtr in selected_quarters:
+                step_count += 1
+                my_bar.progress(step_count / total_steps, text=f"Processing {comp} | {qtr}...")
                 
-                if combined_text:
-                    ai_data = analyze_content(combined_text, comp)
-                    if ai_data:
-                        # Add Quarter to data before saving
-                        save_to_sheet(ws, ai_data, qtr)
-                        # Add Quarter to dict for display
-                        ai_data["Quarter"] = qtr 
-                        comp_data.append(ai_data) # Add to current list
+                # STEP 1: CHECK IF DATA EXISTS IN SHEET
+                db_data = get_existing_data(ws, qtr)
+                
+                if db_data:
+                    # Data Exists -> Use it
+                    comp_data.append(db_data)
                 else:
-                    pass # PDF Missing
+                    # STEP 2: DATA MISSING -> FIND ALL PDFS & ANALYZE
+                    # (Only search PDF if Tab exists but Row is missing)
+                    combined_text = find_and_extract_all_docs(comp, qtr)
+                    
+                    if combined_text:
+                        ai_data = analyze_content(combined_text, comp)
+                        if ai_data:
+                            # Add Quarter to data before saving
+                            save_to_sheet(ws, ai_data, qtr)
+                            # Add Quarter to dict for display
+                            ai_data["Quarter"] = qtr 
+                            comp_data.append(ai_data) # Add to current list
+                    else:
+                        pass # PDF Missing
         
         # Store all data found/created for this competitor
         if comp_data:
@@ -402,48 +393,37 @@ if start_btn:
         
         if matrix_rows:
             df_view = pd.DataFrame(matrix_rows)
-            df_view = df_view.set_index(["Category", "Metric"])
+            # RESET INDEX so "Category" and "Metric" become regular columns
+            # This allows us to apply st.column_config to them for Wrapping!
             
-            # Styling: Wrap Text + Colors
-            # Force CSS via Styler for clean Headers
-            # Background Color for Headers: Dark Grey (#404040), Text: White
-            # Cells: White background, Black text, Word-wrap enabled
+            # --- STYLING LOGIC ---
             
+            # 1. Apply Colors via Pandas Styler
             styled_df = df_view.style.set_properties(**{
                 'white-space': 'normal', 
                 'height': 'auto',
-                'vertical-align': 'top',
                 'border': '1px solid #e6e9ef'
             }).set_table_styles([
-                # Index Header Style
-                {'selector': 'th', 'props': [
-                    ('background-color', '#2b2b2b'), 
-                    ('color', 'white'), 
-                    ('font-weight', 'bold'),
-                    ('border', '1px solid white'),
-                    ('padding', '8px')
-                ]},
-                # Index Index Style (The Category/Metric columns)
-                {'selector': 'th.row_heading', 'props': [
-                    ('background-color', '#f0f2f6'), 
-                    ('color', 'black'), 
-                    ('font-weight', 'bold'),
-                    ('border-bottom', '1px solid #ccc')
-                ]}
+                {'selector': 'th', 'props': [('background-color', '#2b2b2b'), ('color', 'white'), ('font-weight', 'bold')]},
             ])
 
-            # Apply Streamlit Config for Column Widths
+            # 2. Configure Columns for Streamlit (Force Wrap on ALL columns)
             column_config_dict = {}
-            for col_name in df_view.columns:
-                column_config_dict[col_name] = st.column_config.TextColumn(
-                    col_name,
-                    width="medium" # Ensures wrapping
-                )
+            
+            # Apply wrapping to Category & Metric (now regular columns)
+            column_config_dict["Category"] = st.column_config.TextColumn("Category", width="small")
+            column_config_dict["Metric"] = st.column_config.TextColumn("Metric", width="medium")
+            
+            # Apply wrapping to Competitor columns
+            for comp in selected_competitors:
+                column_config_dict[comp] = st.column_config.TextColumn(comp, width="large")
 
+            # 3. Render
             st.dataframe(
-                styled_df, # Pass the styled object
+                styled_df, 
                 use_container_width=True,
-                column_config=column_config_dict
+                column_config=column_config_dict,
+                hide_index=True # Hide the numeric index (0, 1, 2...)
             )
         else:
             st.info(f"No matching data found for {quarter}")
@@ -453,17 +433,15 @@ if start_btn:
     if "Financial" in analysis_mode:
         st.header("📊 Financial Performance Matrix")
         if not final_results:
-            st.warning("No data found.")
+            st.warning("No data found (Ensure Tabs exist in Google Sheet).")
         else:
-            # Generate Side-by-Side Matrix for Financials too
             for qtr in selected_quarters:
-                # Force specific Financial Pillars
-                generate_comparison_matrix(qtr, ["Financial Health", "Funding & Liquidity", "Asset Quality"])
+                generate_comparison_matrix(qtr, selected_pillars)
 
     elif "Strategic" in analysis_mode:
         st.header("🧠 Strategic Executive Briefing")
         if not final_results:
-            st.warning("No data found.")
+            st.warning("No data found (Ensure Tabs exist in Google Sheet).")
         else:
             for qtr in selected_quarters:
                 generate_comparison_matrix(qtr, selected_pillars)
