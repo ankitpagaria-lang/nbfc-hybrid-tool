@@ -131,7 +131,7 @@ def analyze_content(combined_text, competitor):
         st.error(f"Failed to fetch model list: {e}")
         return None
 
-    # 6-PILLAR PROMPT - REFINED FOR TRANSCRIPTS & CONCISENESS
+    # 6-PILLAR PROMPT - REFINED FOR CONCISENESS
     prompt = f"""
     You are a BCG Partner analyzing {competitor}. 
     I have provided text from the **Investor Presentation AND/OR Earnings Call Transcript**.
@@ -141,9 +141,10 @@ def analyze_content(combined_text, competitor):
     - Use the Presentation for hard numbers (NIM, GNPA, AUM).
 
     **CRITICAL OUTPUT RULE: BE EXTREMELY CONCISE.**
-    - Do NOT write full sentences like "The company reported a GNPA of 2.5%".
-    - Write: "GNPA: 2.5% (down 10bps QoQ)".
-    - Max 10-15 words per field. Save space.
+    - MAX 10-15 WORDS PER FIELD.
+    - NO FULL SENTENCES. Use bullet-style phrasing.
+    - Example: "GNPA: 1.2% (down 10bps QoQ)" NOT "The company reported a GNPA of 1.2% which is lower than last quarter."
+    - Example: "Launch of 'Udaan' app for rural market" NOT "The company launched a new app called Udaan."
 
     EXTRACT DATA STRICTLY INTO JSON.
 
@@ -429,30 +430,33 @@ if start_btn:
                     # Set Index for Grouped Look (Category | Metric)
                     df_view = df_view.set_index(["Category", "Metric"])
                     
-                    # DYNAMIC COLUMN CONFIGURATION FOR TEXT WRAPPING
-                    # We create a config dict that applies "width=medium" to ALL columns found
+                    # --- STYLING LOGIC ---
+                    
+                    # A. Apply Visual Styling to the Dataframe (Colors)
+                    # We use pandas styling for the Index and Body
+                    styled_df = df_view.style.set_properties(**{
+                        'background-color': '#ffffff',
+                        'color': '#000000',
+                        'border-color': '#d3d3d3'
+                    })
+                    
+                    # Highlight the Headers/Index (Simulated via text styling)
+                    # Note: Streamlit's st.dataframe allows pandas Styler objects
+                    
+                    # B. Streamlit Column Configuration (Wrapping)
                     column_config_dict = {}
                     for col_name in df_view.columns:
-                        # This Forces wrapping ("medium" or "large" usually triggers wrap)
+                         # Force text wrapping
                         column_config_dict[col_name] = st.column_config.TextColumn(
                             col_name,
-                            width="large" 
+                            width="medium" 
                         )
-                        
-                    # STYLE THE DATAFRAME
-                    # Highlight Index columns (Category, Metric) and Column Headers
-                    def highlight_headers(s):
-                        return ['background-color: #f0f2f6; font-weight: bold' for _ in s]
-
-                    # Note: Pandas styling applies to cell values, Streamlit handles headers via config.
-                    # We rely on Streamlit's native theme for header coloring, but we can style the index.
-                    # However, st.dataframe styling support is basic. 
-                    # The cleanest way to color rows is simple logic:
                     
+                    # Display
                     st.dataframe(
-                        df_view,
+                        styled_df, # Pass the styled object
                         use_container_width=True,
-                        column_config=column_config_dict # <--- THIS ENABLES WRAPPING
+                        column_config=column_config_dict
                     )
                 else:
                     st.info(f"No matching data found for {qtr}")
