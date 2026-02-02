@@ -290,7 +290,7 @@ with st.container():
             selected_quarters = st.multiselect(
                 "Select Quarters", 
                 TRACKED_QUARTERS,
-                default=["Q3FY25"]
+                default=["Q3FY26"]
             )
             selected_pillars = None # Not used
             
@@ -299,7 +299,7 @@ with st.container():
             selected_pillars = st.multiselect(
                 "Select Strategic Pillars",
                 list(PILLAR_MAP.keys()),
-                default=["Financial Health", "Asset Quality"]
+                default=["Asset Quality"]
             )
             selected_quarters = st.multiselect(
                 "Select Periods for Comparison", 
