@@ -16,7 +16,8 @@ st.set_page_config(page_title="NBFC Competitive Intelligence", layout="wide")
 # Fixed Lists for "All Periods" Logic
 TRACKED_QUARTERS = [
     "Q3FY26", "Q2FY26", "Q1FY26", 
-    "Q4FY25"
+    "Q4FY25", "Q3FY25", "Q2FY25", "Q1FY25",
+    "FY24"
 ]
 
 # --- STRATEGIC PILLAR MAPPING ---
@@ -133,7 +134,7 @@ def analyze_content(combined_text, competitor):
 
     # 6-PILLAR PROMPT - HYBRID CONCISENESS RULE
     prompt = f"""
-    You are a BCG Partner analyzing {competitor}. 
+    You are a Senior Strategic Analyst analyzing {competitor}. 
     I have provided text from the **Investor Presentation AND/OR Earnings Call Transcript**.
     
     Synthesize information from both sources. 
@@ -404,23 +405,43 @@ if start_btn:
             df_view = df_view.set_index(["Category", "Metric"])
             
             # Styling: Wrap Text + Colors
+            # Force CSS via Styler for clean Headers
+            # Background Color for Headers: Dark Grey (#404040), Text: White
+            # Cells: White background, Black text, Word-wrap enabled
+            
+            styled_df = df_view.style.set_properties(**{
+                'white-space': 'normal', 
+                'height': 'auto',
+                'vertical-align': 'top',
+                'border': '1px solid #e6e9ef'
+            }).set_table_styles([
+                # Index Header Style
+                {'selector': 'th', 'props': [
+                    ('background-color', '#2b2b2b'), 
+                    ('color', 'white'), 
+                    ('font-weight', 'bold'),
+                    ('border', '1px solid white'),
+                    ('padding', '8px')
+                ]},
+                # Index Index Style (The Category/Metric columns)
+                {'selector': 'th.row_heading', 'props': [
+                    ('background-color', '#f0f2f6'), 
+                    ('color', 'black'), 
+                    ('font-weight', 'bold'),
+                    ('border-bottom', '1px solid #ccc')
+                ]}
+            ])
+
+            # Apply Streamlit Config for Column Widths
             column_config_dict = {}
             for col_name in df_view.columns:
                 column_config_dict[col_name] = st.column_config.TextColumn(
                     col_name,
-                    width="large" 
+                    width="medium" # Ensures wrapping
                 )
-            
-            # Apply Style to Index (Headers)
-            styled_df = df_view.style.set_properties(**{
-                'white-space': 'normal', # Force CSS wrapping
-                'height': 'auto'
-            }).set_table_styles([
-                dict(selector='th', props=[('background-color', '#404040'), ('color', 'white'), ('font-weight', 'bold')])
-            ])
 
             st.dataframe(
-                df_view, # Use the raw DF for Streamlit, styled via config
+                styled_df, # Pass the styled object
                 use_container_width=True,
                 column_config=column_config_dict
             )
