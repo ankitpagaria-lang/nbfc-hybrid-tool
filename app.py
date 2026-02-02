@@ -20,7 +20,7 @@ TRACKED_QUARTERS = [
     "FY24"
 ]
 
-# --- STRATEGIC PILLAR MAPPING (Moved Global for Access) ---
+# --- STRATEGIC PILLAR MAPPING ---
 PILLAR_MAP = {
     "Financial Health": ["NIM_Spreads", "Fee_Income_Ratio", "Cost_to_Income", "RoA", "RoE", "Credit_Cost"],
     "Asset Quality": ["GNPA", "NNPA", "Stage_2_Assets", "Stage_3_Assets", "Collection_Efficiency", "Concentration_Risk"],
@@ -374,8 +374,6 @@ if start_btn:
                 st.markdown(f"### 🗓️ Period: {qtr}")
                 
                 # 1. Prepare Data for Matrix
-                # We need a list of rows where Index = (Pillar, Metric) and Cols = Competitors
-                
                 matrix_rows = []
                 
                 for pillar in selected_pillars:
@@ -406,11 +404,10 @@ if start_btn:
                     # Set Index for Grouped Look
                     df_view = df_view.set_index(["Category", "Metric"])
                     
-                    # Display with Streamlit
+                    # Display with Streamlit (FIXED: removed height=None)
                     st.dataframe(
                         df_view,
-                        use_container_width=True,
-                        height=None # Auto height
+                        use_container_width=True
                     )
                 else:
                     st.info(f"No matching data found for {qtr}")
