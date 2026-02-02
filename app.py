@@ -20,6 +20,16 @@ TRACKED_QUARTERS = [
     "FY24"
 ]
 
+# --- STRATEGIC PILLAR MAPPING (Moved Global for Access) ---
+PILLAR_MAP = {
+    "Financial Health": ["NIM_Spreads", "Fee_Income_Ratio", "Cost_to_Income", "RoA", "RoE", "Credit_Cost"],
+    "Asset Quality": ["GNPA", "NNPA", "Stage_2_Assets", "Stage_3_Assets", "Collection_Efficiency", "Concentration_Risk"],
+    "Growth Engine": ["AUM_Growth", "Disbursement_Velocity", "Co_Lending_Share", "Product_Strategy"],
+    "Funding & Liquidity": ["Cost_of_Funds", "Liability_Mix", "ALM_Gap", "Direct_Assignment"],
+    "Digital & Tech": ["Digital_Sourcing_Percent", "Productivity_Metrics", "Tech_Stack_AI", "Customer_Friction_TAT"],
+    "Soft Power": ["Capital_Adequacy_CRAR", "Regulatory_Standing", "Leadership_Depth", "ESG_Score"]
+}
+
 # --- AUTHENTICATION ---
 def get_gspread_client():
     creds = service_account.Credentials.from_service_account_info(
@@ -110,7 +120,6 @@ def analyze_pdf(pdf_bytes, competitor):
         return None
             
     # 2. GET VALID MODELS FROM GOOGLE (NO GUESSING)
-    # This prevents 404 errors by asking "What exactly do I have?"
     try:
         all_models = list(genai.list_models())
         valid_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
@@ -243,34 +252,38 @@ with st.container():
     
     with col1:
         st.subheader("Configuration")
-        analysis_mode = st.radio("Select Analysis Type:", ["Financial Analysis", "Strategic Analysis"])
+        analysis_mode = st.radio("Select Analysis Type:", ["Financial Analysis (Spreadsheet)", "Strategic Analysis (Executive Matrix)"])
         
         # SHARED INPUT: Competitors
         selected_competitors = st.multiselect(
             "Select Competitors", 
             ["SBFC","Poonawala","FedFina","Bajaj Finance", "SK Finance", "Shriram", "Kogta", "Tata Capital", "Muthoot"],
-            default=["Bajaj Finance"]
+            default=["Bajaj Finance", "Shriram"]
         )
 
     with col2:
         st.subheader("Parameters")
-        if analysis_mode == "Financial Analysis":
+        if "Financial" in analysis_mode:
             # Financial Mode: Needs Specific Quarters
             selected_quarters = st.multiselect(
                 "Select Quarters", 
                 TRACKED_QUARTERS,
                 default=["Q3FY25"]
             )
-            selected_theme = None # Not used
+            selected_pillars = None # Not used
             
         else:
-            # Strategic Mode: Needs Theme, uses ALL quarters automatically
-            st.info("ℹ️ Strategic Mode automatically analyzes historical trends across all tracked periods.")
-            selected_theme = st.selectbox(
-                "Select Strategic Pillar",
-                ["Financial Health", "Asset Quality", "Growth Engine", "Funding & Liquidity", "Digital & Tech", "Soft Power"]
+            # Strategic Mode: MULTI-SELECT for Pillars and Quarters
+            selected_pillars = st.multiselect(
+                "Select Strategic Pillars",
+                list(PILLAR_MAP.keys()),
+                default=["Financial Health", "Asset Quality"]
             )
-            selected_quarters = TRACKED_QUARTERS # Force all quarters
+            selected_quarters = st.multiselect(
+                "Select Periods for Comparison", 
+                TRACKED_QUARTERS,
+                default=["Q3FY25"]
+            )
 
     # THE TRIGGER
     st.markdown("###")
@@ -331,9 +344,9 @@ if start_btn:
     st.success("Analysis Complete!")
     st.markdown("---")
 
-    # --- OUTPUT GENERATION (SENIOR MANAGEMENT VIEW) ---
+    # --- OUTPUT GENERATION (MD/CEO VIEW) ---
     
-    if analysis_mode == "Financial Analysis":
+    if "Financial" in analysis_mode:
         st.header("📊 Financial Performance Matrix")
         
         if not final_results:
@@ -348,36 +361,58 @@ if start_btn:
                 else:
                     st.warning("Data structure invalid.")
 
-    elif analysis_mode == "Strategic Analysis":
-        st.header(f"🧠 Strategic Deep Dive: {selected_theme}")
-        
-        # Define Pillar Mapping
-        pillar_map = {
-            "Financial Health": ["NIM_Spreads", "Cost_to_Income", "RoA", "RoE", "Credit_Cost"],
-            "Asset Quality": ["GNPA", "Stage_2_Assets", "Collection_Efficiency", "Concentration_Risk"],
-            "Growth Engine": ["AUM_Growth", "Disbursement_Velocity", "Co_Lending_Share", "Product_Strategy"],
-            "Funding & Liquidity": ["Cost_of_Funds", "Liability_Mix", "ALM_Gap"],
-            "Digital & Tech": ["Digital_Sourcing_Percent", "Tech_Stack_AI", "Customer_Friction_TAT"],
-            "Soft Power": ["Leadership_Depth", "ESG_Score", "Regulatory_Standing"]
-        }
-        
-        target_cols = pillar_map.get(selected_theme, [])
+    elif "Strategic" in analysis_mode:
+        st.markdown("## 🧠 Strategic Executive Briefing")
         
         if not final_results:
             st.warning("No data available to generate strategic insights.")
+        else:
+            # EXECUTIVE COMPARISON VIEW
+            # Loop through Periods -> Then Build a Comparative Matrix
             
-        for comp, df in final_results.items():
-            st.subheader(f"🏢 {comp}")
-            
-            if not df.empty and "Quarter" in df.columns:
-                # Filter only relevant columns + Quarter
-                cols_to_show = ["Quarter"] + [c for c in target_cols if c in df.columns]
-                try:
-                    subset = df[cols_to_show].set_index("Quarter")
-                    st.table(subset)
-                except KeyError:
-                    st.warning(f"Data missing for some columns in {selected_theme}")
-            else:
-                st.write("Insufficient data.")
-            
-            st.markdown("---")
+            for qtr in selected_quarters:
+                st.markdown(f"### 🗓️ Period: {qtr}")
+                
+                # 1. Prepare Data for Matrix
+                # We need a list of rows where Index = (Pillar, Metric) and Cols = Competitors
+                
+                matrix_rows = []
+                
+                for pillar in selected_pillars:
+                    metrics = PILLAR_MAP.get(pillar, [])
+                    
+                    for metric in metrics:
+                        # Start a new row for this metric
+                        row_data = {"Category": pillar, "Metric": metric}
+                        
+                        # Fill in data for each competitor
+                        for comp in selected_competitors:
+                            df = final_results.get(comp)
+                            val = "-" # Default
+                            
+                            if df is not None and not df.empty and "Quarter" in df.columns:
+                                # Find row for this quarter
+                                match = df[df["Quarter"] == qtr]
+                                if not match.empty:
+                                    val = match.iloc[0].get(metric, "-")
+                            
+                            row_data[comp] = val
+                        
+                        matrix_rows.append(row_data)
+
+                # 2. Display as a Clean Table
+                if matrix_rows:
+                    df_view = pd.DataFrame(matrix_rows)
+                    # Set Index for Grouped Look
+                    df_view = df_view.set_index(["Category", "Metric"])
+                    
+                    # Display with Streamlit
+                    st.dataframe(
+                        df_view,
+                        use_container_width=True,
+                        height=None # Auto height
+                    )
+                else:
+                    st.info(f"No matching data found for {qtr}")
+                
+                st.divider()
