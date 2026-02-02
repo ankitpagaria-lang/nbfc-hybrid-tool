@@ -131,19 +131,24 @@ def analyze_content(combined_text, competitor):
         st.error(f"Failed to fetch model list: {e}")
         return None
 
-    # 6-PILLAR PROMPT - REFINED FOR TRANSCRIPTS
+    # 6-PILLAR PROMPT - REFINED FOR TRANSCRIPTS & CONCISENESS
     prompt = f"""
-    You are a BCG and Top tier Consulting Organization Partner and Consultant analyzing {competitor}. 
+    You are a BCG Partner analyzing {competitor}. 
     I have provided text from the **Investor Presentation AND/OR Earnings Call Transcript**.
     
     Synthesize information from both sources. 
     - Use the Transcript to find "Management Commentary" regarding Strategy, Future Guidance, and nuances.
     - Use the Presentation for hard numbers (NIM, GNPA, AUM).
 
+    **CRITICAL OUTPUT RULE: BE EXTREMELY CONCISE.**
+    - Do NOT write full sentences like "The company reported a GNPA of 2.5%".
+    - Write: "GNPA: 2.5% (down 10bps QoQ)".
+    - Max 10-15 words per field. Save space.
+
     EXTRACT DATA STRICTLY INTO JSON.
 
     PILLAR 1: FINANCIAL HEALTH
-    - NIM_Spreads: Net Interest Margin & Spreads. (Look for specific product spreads in transcript).
+    - NIM_Spreads: Net Interest Margin & Spreads.
     - Fee_Income_Ratio: Non-interest income %.
     - Cost_to_Income: Opex / Total Income.
     - RoA: Return on Assets %.
@@ -162,7 +167,7 @@ def analyze_content(combined_text, competitor):
     - AUM_Growth: YoY AUM Growth %.
     - Disbursement_Velocity: New loans disbursed.
     - Co_Lending_Share: % sourced via partners.
-    - Product_Strategy: New launches vs Old products (Look for "Blue Ocean" commentary).
+    - Product_Strategy: New launches vs Old products.
 
     PILLAR 4: FUNDING
     - Cost_of_Funds: Weighted avg borrowing cost.
@@ -179,7 +184,7 @@ def analyze_content(combined_text, competitor):
     PILLAR 6: SOFT POWER
     - Capital_Adequacy_CRAR: Tier 1 + Tier 2.
     - Regulatory_Standing: Compliance/Penalties.
-    - Leadership_Depth: Management changes (Mention specific names if transcript mentions exits).
+    - Leadership_Depth: Management changes.
     - ESG_Score: Green financing/Social impact.
 
     OUTPUT FORMAT:
@@ -192,7 +197,7 @@ def analyze_content(combined_text, competitor):
         "Digital_Sourcing_Percent": "...", "Productivity_Metrics": "...", "Tech_Stack_AI": "...", "Customer_Friction_TAT": "...",
         "Capital_Adequacy_CRAR": "...", "Regulatory_Standing": "...", "Leadership_Depth": "...", "ESG_Score": "..."
     }}
-    If data is missing, put "Not Disclosed". Keep text concise (max 4-5 sentences per field).
+    If data is missing, put "Not Disclosed". 
     """
 
     # 3. SURVIVOR LOOP
@@ -290,7 +295,7 @@ with st.container():
             selected_quarters = st.multiselect(
                 "Select Quarters", 
                 TRACKED_QUARTERS,
-                default=["Q3FY26"]
+                default=[TRACKED_QUARTERS[0]]
             )
             selected_pillars = None # Not used
             
@@ -304,7 +309,7 @@ with st.container():
             selected_quarters = st.multiselect(
                 "Select Periods for Comparison", 
                 TRACKED_QUARTERS,
-                default=["Q3FY26"]
+                default=[TRACKED_QUARTERS[0]]
             )
 
     # THE TRIGGER
@@ -418,15 +423,37 @@ if start_btn:
                         
                         matrix_rows.append(row_data)
 
-                # 2. Display as a Clean Table (st.table forces text wrapping)
+                # 2. Display as a Colored, Wrapped Dataframe
                 if matrix_rows:
                     df_view = pd.DataFrame(matrix_rows)
                     # Set Index for Grouped Look (Category | Metric)
                     df_view = df_view.set_index(["Category", "Metric"])
                     
-                    # USE ST.TABLE FOR WRAPPING
-                    st.table(df_view)
+                    # DYNAMIC COLUMN CONFIGURATION FOR TEXT WRAPPING
+                    # We create a config dict that applies "width=medium" to ALL columns found
+                    column_config_dict = {}
+                    for col_name in df_view.columns:
+                        # This Forces wrapping ("medium" or "large" usually triggers wrap)
+                        column_config_dict[col_name] = st.column_config.TextColumn(
+                            col_name,
+                            width="large" 
+                        )
+                        
+                    # STYLE THE DATAFRAME
+                    # Highlight Index columns (Category, Metric) and Column Headers
+                    def highlight_headers(s):
+                        return ['background-color: #f0f2f6; font-weight: bold' for _ in s]
+
+                    # Note: Pandas styling applies to cell values, Streamlit handles headers via config.
+                    # We rely on Streamlit's native theme for header coloring, but we can style the index.
+                    # However, st.dataframe styling support is basic. 
+                    # The cleanest way to color rows is simple logic:
                     
+                    st.dataframe(
+                        df_view,
+                        use_container_width=True,
+                        column_config=column_config_dict # <--- THIS ENABLES WRAPPING
+                    )
                 else:
                     st.info(f"No matching data found for {qtr}")
                 
