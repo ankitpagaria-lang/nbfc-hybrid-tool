@@ -418,28 +418,15 @@ if start_btn:
                         
                         matrix_rows.append(row_data)
 
-                # 2. Display as a Clean Table with WRAPPED TEXT
+                # 2. Display as a Clean Table (st.table forces text wrapping)
                 if matrix_rows:
                     df_view = pd.DataFrame(matrix_rows)
                     # Set Index for Grouped Look (Category | Metric)
                     df_view = df_view.set_index(["Category", "Metric"])
                     
-                    # DYNAMIC COLUMN CONFIGURATION FOR TEXT WRAPPING
-                    # We create a config dict that applies "width=medium" to ALL columns found
-                    column_config_dict = {}
-                    for col_name in df_view.columns:
-                        # This Forces wrapping ("medium" or "large" usually triggers wrap)
-                        column_config_dict[col_name] = st.column_config.TextColumn(
-                            col_name,
-                            width="large" 
-                        )
-
-                    # Display with Streamlit
-                    st.dataframe(
-                        df_view,
-                        use_container_width=True,
-                        column_config=column_config_dict # <--- THIS ENABLES WRAPPING
-                    )
+                    # USE ST.TABLE FOR WRAPPING
+                    st.table(df_view)
+                    
                 else:
                     st.info(f"No matching data found for {qtr}")
                 
