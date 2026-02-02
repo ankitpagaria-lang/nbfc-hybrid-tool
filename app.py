@@ -11,7 +11,7 @@ import pypdf
 import time
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NBFC Master Vault", layout="wide")
+st.set_page_config(page_title="NBFC Competitive Intelligence", layout="wide")
 
 # Fixed Lists for "All Periods" Logic
 TRACKED_QUARTERS = [
@@ -131,7 +131,7 @@ def analyze_content(combined_text, competitor):
         st.error(f"Failed to fetch model list: {e}")
         return None
 
-    # 6-PILLAR PROMPT - REFINED FOR CONCISENESS
+    # 6-PILLAR PROMPT - HYBRID CONCISENESS RULE
     prompt = f"""
     You are a BCG Partner analyzing {competitor}. 
     I have provided text from the **Investor Presentation AND/OR Earnings Call Transcript**.
@@ -140,53 +140,57 @@ def analyze_content(combined_text, competitor):
     - Use the Transcript to find "Management Commentary" regarding Strategy, Future Guidance, and nuances.
     - Use the Presentation for hard numbers (NIM, GNPA, AUM).
 
-    **CRITICAL OUTPUT RULE: BE EXTREMELY CONCISE.**
-    - MAX 10-15 WORDS PER FIELD.
-    - NO FULL SENTENCES. Use bullet-style phrasing.
-    - Example: "GNPA: 1.2% (down 10bps QoQ)" NOT "The company reported a GNPA of 1.2% which is lower than last quarter."
-    - Example: "Launch of 'Udaan' app for rural market" NOT "The company launched a new app called Udaan."
+    **CRITICAL OUTPUT RULES:**
+    1. **FINANCIAL METRICS (NIM, GNPA, RoA, Cost of Funds, etc.):** - BE EXTREMELY CONCISE. Max 10-15 words.
+       - Format: "Value (YoY/QoQ change)".
+       - Example: "2.5% (down 10bps QoQ)" 
+
+    2. **STRATEGIC/NON-FINANCIAL METRICS (Strategy, Tech, Leadership, ESG):**
+       - ALLOW CONTEXT. You can use 2-3 sentences.
+       - Explain the "Why" and "How".
+       - Example: "Launched 'Udaan' app for rural market to reduce acquisition costs by 15%. Focus on Tier-3 cities."
 
     EXTRACT DATA STRICTLY INTO JSON.
 
-    PILLAR 1: FINANCIAL HEALTH
-    - NIM_Spreads: Net Interest Margin & Spreads.
-    - Fee_Income_Ratio: Non-interest income %.
-    - Cost_to_Income: Opex / Total Income.
-    - RoA: Return on Assets %.
-    - RoE: Return on Equity %.
-    - Credit_Cost: Provisions %.
+    PILLAR 1: FINANCIAL HEALTH (Concise)
+    - NIM_Spreads
+    - Fee_Income_Ratio
+    - Cost_to_Income
+    - RoA
+    - RoE
+    - Credit_Cost
 
-    PILLAR 2: ASSET QUALITY
-    - GNPA: Gross NPA %.
-    - NNPA: Net NPA %.
-    - Stage_2_Assets: Loans overdue 60+ days.
-    - Stage_3_Assets: Loans overdue 90+ days.
-    - Collection_Efficiency: Collection Demand vs Collection.
-    - Concentration_Risk: Geo or Borrower concentration.
+    PILLAR 2: ASSET QUALITY (Concise)
+    - GNPA
+    - NNPA
+    - Stage_2_Assets
+    - Stage_3_Assets
+    - Collection_Efficiency
+    - Concentration_Risk
 
-    PILLAR 3: GROWTH
-    - AUM_Growth: YoY AUM Growth %.
-    - Disbursement_Velocity: New loans disbursed.
-    - Co_Lending_Share: % sourced via partners.
-    - Product_Strategy: New launches vs Old products.
+    PILLAR 3: GROWTH (Descriptive - 2/3 sentences)
+    - AUM_Growth
+    - Disbursement_Velocity
+    - Co_Lending_Share
+    - Product_Strategy
 
-    PILLAR 4: FUNDING
-    - Cost_of_Funds: Weighted avg borrowing cost.
-    - Liability_Mix: Bank vs NCD vs CP mix.
-    - ALM_Gap: Asset Liability positive/negative mismatch.
-    - Direct_Assignment: Securitization volume.
+    PILLAR 4: FUNDING (Concise)
+    - Cost_of_Funds
+    - Liability_Mix
+    - ALM_Gap
+    - Direct_Assignment
 
-    PILLAR 5: DIGITAL
-    - Digital_Sourcing_Percent: % loans via STP/App.
-    - Productivity_Metrics: AUM per employee or Branch profit.
-    - Tech_Stack_AI: AI/Cloud investments.
-    - Customer_Friction_TAT: Turnaround time metrics.
+    PILLAR 5: DIGITAL (Descriptive - 2/3 sentences)
+    - Digital_Sourcing_Percent
+    - Productivity_Metrics
+    - Tech_Stack_AI
+    - Customer_Friction_TAT
 
-    PILLAR 6: SOFT POWER
-    - Capital_Adequacy_CRAR: Tier 1 + Tier 2.
-    - Regulatory_Standing: Compliance/Penalties.
-    - Leadership_Depth: Management changes.
-    - ESG_Score: Green financing/Social impact.
+    PILLAR 6: SOFT POWER (Descriptive - 2/3 sentences)
+    - Capital_Adequacy_CRAR
+    - Regulatory_Standing
+    - Leadership_Depth
+    - ESG_Score
 
     OUTPUT FORMAT:
     Single JSON object matching exactly these keys:
@@ -271,7 +275,7 @@ def find_and_extract_all_docs(comp, qtr):
         return None
 
 # --- MAIN UI ---
-st.title("🏦 Executive NBFC Vault")
+st.title("🏦 NBFC Competitive Intelligence")
 st.markdown("---")
 
 # 1. INPUT SECTION
@@ -292,20 +296,22 @@ with st.container():
     with col2:
         st.subheader("Parameters")
         if "Financial" in analysis_mode:
-            # Financial Mode: Needs Specific Quarters
+            # Financial Mode: NEEDS SIDE-BY-SIDE MATRIX NOW
+            # Allowing Multi-Select Quarters for flexible comparison
             selected_quarters = st.multiselect(
-                "Select Quarters", 
+                "Select Periods for Comparison", 
                 TRACKED_QUARTERS,
                 default=[TRACKED_QUARTERS[0]]
             )
-            selected_pillars = None # Not used
+            # Default Financial Pillars
+            selected_pillars = ["Financial Health", "Funding & Liquidity"] 
             
         else:
             # Strategic Mode: MULTI-SELECT for Pillars and Quarters
             selected_pillars = st.multiselect(
                 "Select Strategic Pillars",
                 list(PILLAR_MAP.keys()),
-                default=["Asset Quality"]
+                default=["Asset Quality", "Growth Engine"]
             )
             selected_quarters = st.multiselect(
                 "Select Periods for Comparison", 
@@ -374,91 +380,69 @@ if start_btn:
 
     # --- OUTPUT GENERATION (MD/CEO VIEW) ---
     
+    # REUSABLE MATRIX GENERATOR FUNCTION
+    def generate_comparison_matrix(quarter, pillars):
+        st.markdown(f"### 🗓️ Period: {quarter}")
+        matrix_rows = []
+        
+        for pillar in pillars:
+            metrics = PILLAR_MAP.get(pillar, [])
+            for metric in metrics:
+                row_data = {"Category": pillar, "Metric": metric}
+                for comp in selected_competitors:
+                    df = final_results.get(comp)
+                    val = "-" 
+                    if df is not None and not df.empty and "Quarter" in df.columns:
+                        match = df[df["Quarter"] == quarter]
+                        if not match.empty:
+                            val = match.iloc[0].get(metric, "-")
+                    row_data[comp] = val
+                matrix_rows.append(row_data)
+        
+        if matrix_rows:
+            df_view = pd.DataFrame(matrix_rows)
+            df_view = df_view.set_index(["Category", "Metric"])
+            
+            # Styling: Wrap Text + Colors
+            column_config_dict = {}
+            for col_name in df_view.columns:
+                column_config_dict[col_name] = st.column_config.TextColumn(
+                    col_name,
+                    width="large" 
+                )
+            
+            # Apply Style to Index (Headers)
+            styled_df = df_view.style.set_properties(**{
+                'white-space': 'normal', # Force CSS wrapping
+                'height': 'auto'
+            }).set_table_styles([
+                dict(selector='th', props=[('background-color', '#404040'), ('color', 'white'), ('font-weight', 'bold')])
+            ])
+
+            st.dataframe(
+                df_view, # Use the raw DF for Streamlit, styled via config
+                use_container_width=True,
+                column_config=column_config_dict
+            )
+        else:
+            st.info(f"No matching data found for {quarter}")
+        st.divider()
+
+    # --- DISPLAY LOGIC ---
     if "Financial" in analysis_mode:
         st.header("📊 Financial Performance Matrix")
-        
         if not final_results:
-            st.warning("No data found for the selected criteria.")
-        
-        for comp, df in final_results.items():
-            with st.expander(f"📘 {comp} - Financial Overview", expanded=True):
-                if not df.empty and "Quarter" in df.columns:
-                    # Clean display: Quarters as Columns
-                    df = df.set_index("Quarter")
-                    st.dataframe(df.T, use_container_width=True)
-                else:
-                    st.warning("Data structure invalid.")
+            st.warning("No data found.")
+        else:
+            # Generate Side-by-Side Matrix for Financials too
+            for qtr in selected_quarters:
+                # Force specific Financial Pillars
+                generate_comparison_matrix(qtr, ["Financial Health", "Funding & Liquidity", "Asset Quality"])
 
     elif "Strategic" in analysis_mode:
-        st.markdown("## 🧠 Strategic Executive Briefing")
-        
+        st.header("🧠 Strategic Executive Briefing")
         if not final_results:
-            st.warning("No data available to generate strategic insights.")
+            st.warning("No data found.")
         else:
-            # EXECUTIVE COMPARISON VIEW
             for qtr in selected_quarters:
-                st.markdown(f"### 🗓️ Period: {qtr}")
-                
-                # 1. Prepare Data for Matrix
-                matrix_rows = []
-                
-                for pillar in selected_pillars:
-                    metrics = PILLAR_MAP.get(pillar, [])
-                    
-                    for metric in metrics:
-                        # Start a new row for this metric
-                        row_data = {"Category": pillar, "Metric": metric}
-                        
-                        # Fill in data for each competitor
-                        for comp in selected_competitors:
-                            df = final_results.get(comp)
-                            val = "-" # Default
-                            
-                            if df is not None and not df.empty and "Quarter" in df.columns:
-                                # Find row for this quarter
-                                match = df[df["Quarter"] == qtr]
-                                if not match.empty:
-                                    val = match.iloc[0].get(metric, "-")
-                            
-                            row_data[comp] = val
-                        
-                        matrix_rows.append(row_data)
-
-                # 2. Display as a Colored, Wrapped Dataframe
-                if matrix_rows:
-                    df_view = pd.DataFrame(matrix_rows)
-                    # Set Index for Grouped Look (Category | Metric)
-                    df_view = df_view.set_index(["Category", "Metric"])
-                    
-                    # --- STYLING LOGIC ---
-                    
-                    # A. Apply Visual Styling to the Dataframe (Colors)
-                    # We use pandas styling for the Index and Body
-                    styled_df = df_view.style.set_properties(**{
-                        'background-color': '#ffffff',
-                        'color': '#000000',
-                        'border-color': '#d3d3d3'
-                    })
-                    
-                    # Highlight the Headers/Index (Simulated via text styling)
-                    # Note: Streamlit's st.dataframe allows pandas Styler objects
-                    
-                    # B. Streamlit Column Configuration (Wrapping)
-                    column_config_dict = {}
-                    for col_name in df_view.columns:
-                         # Force text wrapping
-                        column_config_dict[col_name] = st.column_config.TextColumn(
-                            col_name,
-                            width="medium" 
-                        )
-                    
-                    # Display
-                    st.dataframe(
-                        styled_df, # Pass the styled object
-                        use_container_width=True,
-                        column_config=column_config_dict
-                    )
-                else:
-                    st.info(f"No matching data found for {qtr}")
-                
-                st.divider()
+                generate_comparison_matrix(qtr, selected_pillars)
