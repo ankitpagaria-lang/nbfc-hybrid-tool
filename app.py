@@ -104,32 +104,23 @@ def save_to_sheet(worksheet, data, quarter):
     worksheet.append_row(row)
 
 # --- BULLETPROOF AI ENGINE (INVENTORY BASED) ---
-def analyze_pdf(pdf_bytes, competitor):
+def analyze_content(combined_text, competitor):
+    """
+    Analyzes text from BOTH Presentation and Transcript.
+    """
     genai.configure(api_key=st.secrets["gemini_api_key"])
-    
-    # 1. Extract text
-    try:
-        pdf_file = io.BytesIO(pdf_bytes)
-        reader = pypdf.PdfReader(pdf_file)
-        text = ""
-        for page in reader.pages:
-            if page.extract_text():
-                text += page.extract_text() + "\n"
-    except Exception as e:
-        st.error(f"PDF Reading Error: {e}")
-        return None
             
-    # 2. GET VALID MODELS FROM GOOGLE (NO GUESSING)
+    # 1. GET VALID MODELS FROM GOOGLE (NO GUESSING)
     try:
         all_models = list(genai.list_models())
         valid_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
         
-        # Sort them so we try the best ones first (1.5 Flash -> 1.5 Pro -> Others)
+        # Priority: Flash (Large Context Window) -> Pro -> Others
         def model_priority(name):
-            if "1.5-flash" in name: return 0  # Top Priority (Fast/Free)
-            if "1.5-pro" in name: return 1    # Second Priority
+            if "1.5-flash" in name: return 0  # Best for large transcripts
+            if "1.5-pro" in name: return 1
             if "gemini-pro" in name: return 2
-            return 3 # Everything else
+            return 3
             
         valid_models.sort(key=model_priority)
         
@@ -141,17 +132,24 @@ def analyze_pdf(pdf_bytes, competitor):
         st.error(f"Failed to fetch model list: {e}")
         return None
 
-    # 6-PILLAR PROMPT
+    # 6-PILLAR PROMPT - REFINED FOR TRANSCRIPTS
     prompt = f"""
-    You are a Senior Banking Analyst analyzing {competitor}. Extract data strictly into JSON.
+    You are a Senior Banking Analyst analyzing {competitor}. 
+    I have provided text from the **Investor Presentation AND/OR Earnings Call Transcript**.
     
+    Synthesize information from both sources. 
+    - Use the Transcript to find "Management Commentary" regarding Strategy, Future Guidance, and nuances.
+    - Use the Presentation for hard numbers (NIM, GNPA, AUM).
+
+    EXTRACT DATA STRICTLY INTO JSON.
+
     PILLAR 1: FINANCIAL HEALTH
-    - NIM_Spreads: Net Interest Margin & Spreads (Yield - CoF). Breakdown by product if avail.
-    - Fee_Income_Ratio: Non-interest income as % of total.
+    - NIM_Spreads: Net Interest Margin & Spreads. (Look for specific product spreads in transcript).
+    - Fee_Income_Ratio: Non-interest income %.
     - Cost_to_Income: Opex / Total Income.
     - RoA: Return on Assets %.
     - RoE: Return on Equity %.
-    - Credit_Cost: Provisions/Write-offs as % of AUM.
+    - Credit_Cost: Provisions %.
 
     PILLAR 2: ASSET QUALITY
     - GNPA: Gross NPA %.
@@ -165,24 +163,24 @@ def analyze_pdf(pdf_bytes, competitor):
     - AUM_Growth: YoY AUM Growth %.
     - Disbursement_Velocity: New loans disbursed.
     - Co_Lending_Share: % sourced via partners.
-    - Product_Strategy: New launches vs Old products.
+    - Product_Strategy: New launches vs Old products (Look for "Blue Ocean" commentary).
 
     PILLAR 4: FUNDING
     - Cost_of_Funds: Weighted avg borrowing cost.
     - Liability_Mix: Bank vs NCD vs CP mix.
     - ALM_Gap: Asset Liability positive/negative mismatch.
-    - Direct_Assignment: Securitization/Book selldown volume.
+    - Direct_Assignment: Securitization volume.
 
     PILLAR 5: DIGITAL
     - Digital_Sourcing_Percent: % loans via STP/App.
     - Productivity_Metrics: AUM per employee or Branch profit.
-    - Tech_Stack_AI: AI/Cloud investments mentioned.
+    - Tech_Stack_AI: AI/Cloud investments.
     - Customer_Friction_TAT: Turnaround time metrics.
 
     PILLAR 6: SOFT POWER
     - Capital_Adequacy_CRAR: Tier 1 + Tier 2.
     - Regulatory_Standing: Compliance/Penalties.
-    - Leadership_Depth: Management changes/stability.
+    - Leadership_Depth: Management changes (Mention specific names if transcript mentions exits).
     - ESG_Score: Green financing/Social impact.
 
     OUTPUT FORMAT:
@@ -195,16 +193,17 @@ def analyze_pdf(pdf_bytes, competitor):
         "Digital_Sourcing_Percent": "...", "Productivity_Metrics": "...", "Tech_Stack_AI": "...", "Customer_Friction_TAT": "...",
         "Capital_Adequacy_CRAR": "...", "Regulatory_Standing": "...", "Leadership_Depth": "...", "ESG_Score": "..."
     }}
-    If data is missing, put "Not Disclosed". Keep text concise (max 2 sentences per field).
+    If data is missing, put "Not Disclosed". Keep text concise (max 2-3 sentences per field).
     """
 
-    # 3. SURVIVOR LOOP (Try every valid model until one works)
+    # 3. SURVIVOR LOOP
     last_error = None
     
     for model_name in valid_models:
         try:
             model = genai.GenerativeModel(model_name)
-            response = model.generate_content([prompt, text])
+            # Send the MASSIVE combined text
+            response = model.generate_content([prompt, combined_text])
             
             # Clean JSON
             raw_text = response.text
@@ -213,34 +212,58 @@ def analyze_pdf(pdf_bytes, competitor):
             elif "```" in raw_text:
                 raw_text = raw_text.split("```")[1]
             
-            return json.loads(raw_text) # Success! Return immediately.
+            return json.loads(raw_text) 
             
         except Exception as e:
-            # If a model fails (Quota or Error), we just try the next valid one
             last_error = e
             continue 
 
-    # If we exit the loop, everything failed
     st.error(f"Analysis Failed. Last Error: {last_error}")
     return None
 
-# --- DRIVE SEARCH ---
-def find_file(comp, qtr):
+# --- DRIVE SEARCH & EXTRACT (UPDATED FOR MULTI-FILE) ---
+def find_and_extract_all_docs(comp, qtr):
+    """
+    Searches for ALL matching PDFs (Presentations AND Transcripts).
+    Returns combined text from all of them.
+    """
     service = get_drive_service()
-    # Loose match search for robustness
+    # Loose match search: Finds "Bajaj Q3 Presentation" AND "Bajaj Q3 Transcript"
     query = f"name contains '{comp}' and name contains '{qtr}' and mimeType = 'application/pdf' and trashed = false"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
-    files = results.get('files', [])
     
-    if not files: return None
-    
-    # Download
-    request = service.files().get_media(fileId=files[0]['id'])
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while not done: _, done = downloader.next_chunk()
-    return fh.getvalue()
+    try:
+        results = service.files().list(q=query, fields="files(id, name)").execute()
+        files = results.get('files', [])
+        
+        if not files: return None
+        
+        full_combined_text = ""
+        files_found = []
+        
+        for file in files:
+            files_found.append(file['name'])
+            # Download
+            request = service.files().get_media(fileId=file['id'])
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while not done: _, done = downloader.next_chunk()
+            
+            # Extract Text
+            try:
+                pdf_reader = pypdf.PdfReader(fh)
+                for page in pdf_reader.pages:
+                    if page.extract_text():
+                        full_combined_text += page.extract_text() + "\n"
+            except:
+                pass # Skip unreadable files
+        
+        # print(f"DEBUG: Found {len(files)} files: {files_found}")
+        return full_combined_text
+
+    except Exception as e:
+        st.error(f"Drive Error: {e}")
+        return None
 
 # --- MAIN UI ---
 st.title("🏦 Executive NBFC Vault")
@@ -322,11 +345,11 @@ if start_btn:
                 # Data Exists -> Use it
                 comp_data.append(db_data)
             else:
-                # STEP 2: IF MISSING -> FIND PDF & ANALYZE
-                pdf_bytes = find_file(comp, qtr)
+                # STEP 2: IF MISSING -> FIND ALL PDFS (Pres + Transcript) & ANALYZE
+                combined_text = find_and_extract_all_docs(comp, qtr)
                 
-                if pdf_bytes:
-                    ai_data = analyze_pdf(pdf_bytes, comp)
+                if combined_text:
+                    ai_data = analyze_content(combined_text, comp)
                     if ai_data:
                         # Add Quarter to data before saving
                         save_to_sheet(ws, ai_data, qtr)
@@ -368,8 +391,6 @@ if start_btn:
             st.warning("No data available to generate strategic insights.")
         else:
             # EXECUTIVE COMPARISON VIEW
-            # Loop through Periods -> Then Build a Comparative Matrix
-            
             for qtr in selected_quarters:
                 st.markdown(f"### 🗓️ Period: {qtr}")
                 
@@ -398,16 +419,27 @@ if start_btn:
                         
                         matrix_rows.append(row_data)
 
-                # 2. Display as a Clean Table
+                # 2. Display as a Clean Table with WRAPPED TEXT
                 if matrix_rows:
                     df_view = pd.DataFrame(matrix_rows)
-                    # Set Index for Grouped Look
+                    # Set Index for Grouped Look (Category | Metric)
                     df_view = df_view.set_index(["Category", "Metric"])
                     
-                    # Display with Streamlit (FIXED: removed height=None)
+                    # DYNAMIC COLUMN CONFIGURATION FOR TEXT WRAPPING
+                    # We create a config dict that applies "width=medium" to ALL columns found
+                    column_config_dict = {}
+                    for col_name in df_view.columns:
+                        # This Forces wrapping ("medium" or "large" usually triggers wrap)
+                        column_config_dict[col_name] = st.column_config.TextColumn(
+                            col_name,
+                            width="large" 
+                        )
+
+                    # Display with Streamlit
                     st.dataframe(
                         df_view,
-                        use_container_width=True
+                        use_container_width=True,
+                        column_config=column_config_dict # <--- THIS ENABLES WRAPPING
                     )
                 else:
                     st.info(f"No matching data found for {qtr}")
