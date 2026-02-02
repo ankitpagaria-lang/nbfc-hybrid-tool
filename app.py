@@ -304,7 +304,7 @@ with st.container():
             selected_quarters = st.multiselect(
                 "Select Periods for Comparison", 
                 TRACKED_QUARTERS,
-                default=["Q3FY25"]
+                default=["Q3FY26"]
             )
 
     # THE TRIGGER
