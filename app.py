@@ -72,14 +72,14 @@ if check_password():
             all_records = worksheet.get_all_records()
             df = pd.DataFrame(all_records)
             if df.empty: return None
-            # Check if Quarter column exists and has data
             if "Quarter" not in df.columns: return None
+            # Filter for the specific quarter
             row = df[df["Quarter"] == quarter]
             if not row.empty:
                 return row.iloc[0].to_dict()
             return None
         except Exception as e:
-            st.error(f"DB Read Error: {e}")
+            # st.error(f"DB Read Error: {e}") # Optional logging
             return None
 
     def save_to_sheet(worksheet, data, quarter):
@@ -95,39 +95,71 @@ if check_password():
         ]
         worksheet.append_row(row)
 
-    def analyze_content(combined_text, competitor):
+    # --- ROBUST AI ENGINE WITH FALLBACK ---
+    def analyze_content_with_fallback(combined_text, competitor):
         genai.configure(api_key=st.secrets["gemini_api_key"])
-        try:
-            model = genai.GenerativeModel("gemini-1.5-flash") # Safe default
-            
-            prompt = f"""
-            You are a Strategic Analyst analyzing {competitor}. 
-            Source Material: **Investor Presentation / Earnings Call Transcript**.
-            
-            **OUTPUT RULES:**
-            1. **FINANCIALS:** BE CONCISE. Numbers only. Format: "2.5% (down 10bps)". Normalize to INR Cr.
-            2. **STRATEGY:** Provide 2-3 sentences of context/commentary from management.
+        
+        # PRIORITIZED MODEL LIST (Future Proofing -> Stable -> Legacy)
+        # We try them in this order. If one fails (404/Quota), we try the next.
+        model_candidates = [
+            "gemini-3.0-pro-preview", # Future/Beta
+            "gemini-2.0-flash-exp",   # Bleeding Edge
+            "gemini-1.5-pro",         # High Intelligence
+            "gemini-1.5-flash",       # Standard Fast
+            "gemini-1.5-flash-8b",    # Ultra Fast
+            "gemini-1.0-pro",         # Legacy Fallback
+            "gemini-pro"              # Oldest Fallback
+        ]
 
-            EXTRACT DATA STRICTLY INTO JSON:
-            {{
-                "NIM_Spreads": "...", "Fee_Income_Ratio": "...", "Cost_to_Income": "...", "RoA": "...", "RoE": "...", "Credit_Cost": "...",
-                "GNPA": "...", "NNPA": "...", "Stage_2_Assets": "...", "Stage_3_Assets": "...", "Collection_Efficiency": "...", "Concentration_Risk": "...",
-                "AUM_Growth": "...", "Disbursement_Velocity": "...", "Co_Lending_Share": "...", "Product_Strategy": "...",
-                "Cost_of_Funds": "...", "Liability_Mix": "...", "ALM_Gap": "...", "Direct_Assignment": "...",
-                "Digital_Sourcing_Percent": "...", "Productivity_Metrics": "...", "Tech_Stack_AI": "...", "Customer_Friction_TAT": "...",
-                "Capital_Adequacy_CRAR": "...", "Regulatory_Standing": "...", "Leadership_Depth": "...", "ESG_Score": "..."
-            }}
-            """
-            response = model.generate_content([prompt, combined_text])
-            raw_text = response.text
-            if "```json" in raw_text:
-                raw_text = raw_text.split("```json")[1].split("```")[0]
-            elif "```" in raw_text:
-                raw_text = raw_text.split("```")[1]
-            return json.loads(raw_text)
-        except Exception as e:
-            st.error(f"AI Error: {e}")
-            return None
+        prompt = f"""
+        You are a Strategic Analyst analyzing {competitor}. 
+        Source Material: **Investor Presentation / Earnings Call Transcript**.
+        
+        **OUTPUT RULES:**
+        1. **FINANCIALS:** BE CONCISE. Numbers only. Format: "2.5% (down 10bps)". Normalize to INR Cr.
+        2. **STRATEGY:** Provide 2-3 sentences of context/commentary from management.
+
+        EXTRACT DATA STRICTLY INTO JSON:
+        {{
+            "NIM_Spreads": "...", "Fee_Income_Ratio": "...", "Cost_to_Income": "...", "RoA": "...", "RoE": "...", "Credit_Cost": "...",
+            "GNPA": "...", "NNPA": "...", "Stage_2_Assets": "...", "Stage_3_Assets": "...", "Collection_Efficiency": "...", "Concentration_Risk": "...",
+            "AUM_Growth": "...", "Disbursement_Velocity": "...", "Co_Lending_Share": "...", "Product_Strategy": "...",
+            "Cost_of_Funds": "...", "Liability_Mix": "...", "ALM_Gap": "...", "Direct_Assignment": "...",
+            "Digital_Sourcing_Percent": "...", "Productivity_Metrics": "...", "Tech_Stack_AI": "...", "Customer_Friction_TAT": "...",
+            "Capital_Adequacy_CRAR": "...", "Regulatory_Standing": "...", "Leadership_Depth": "...", "ESG_Score": "..."
+        }}
+        """
+
+        last_error = None
+
+        for model_name in model_candidates:
+            try:
+                # st.toast(f"Trying Model: {model_name}...") # Uncomment for debugging
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content([prompt, combined_text])
+                
+                # Parse Response
+                raw_text = response.text
+                if "```json" in raw_text:
+                    raw_text = raw_text.split("```json")[1].split("```")[0]
+                elif "```" in raw_text:
+                    raw_text = raw_text.split("```")[1]
+                
+                return json.loads(raw_text) # Success! Return data.
+
+            except Exception as e:
+                # Log error and continue to next model
+                last_error = e
+                # Only print specific errors to avoid clutter
+                if "404" in str(e) or "429" in str(e):
+                    continue
+                else:
+                    print(f"Model {model_name} failed with {e}")
+                    continue
+
+        # If loop finishes and nothing returned:
+        st.error(f"All AI Models Failed. Last Error: {last_error}")
+        return None
 
     def find_and_extract_all_docs(comp, qtr):
         service = get_drive_service()
@@ -168,9 +200,11 @@ if check_password():
     with st.container():
         col1, col2 = st.columns([1, 2])
         with col1:
+            st.subheader("Configuration")
             analysis_mode = st.radio("Select View:", ["Financial Analysis", "Strategic Analysis"])
             selected_competitors = st.multiselect("Competitors", ["SBFC","Poonawala","FedFina","Tata Capital", "HDB"], default=["SBFC"])
         with col2:
+            st.subheader("Parameters")
             if "Financial" in analysis_mode:
                 selected_quarters = st.multiselect("Quarters", TRACKED_QUARTERS, default=[TRACKED_QUARTERS[0]])
                 selected_pillars = ["Financial Health", "Funding & Liquidity", "Asset Quality"]
@@ -194,7 +228,7 @@ if check_password():
         for comp in selected_competitors:
             status_box.write(f"**Checking {comp}...**")
             
-            # 1. CHECK TAB
+            # 1. STRICT CHECK: TAB EXISTENCE
             ws = get_tab_if_exists(sh, comp)
             if not ws:
                 status_box.warning(f"⚠️ Tab '{comp}' NOT found in Sheet. Skipping.")
@@ -202,24 +236,26 @@ if check_password():
             
             comp_data = []
             for qtr in selected_quarters:
-                # 2. CHECK EXISTING DATA
+                # 2. CHECK EXISTING DATA (SHEET FIRST)
                 db_data = get_existing_data(ws, qtr)
+                
                 if db_data:
-                    status_box.success(f"✅ Found Data for {comp} | {qtr}")
+                    # DATA FOUND IN SHEET -> USE IT
+                    status_box.success(f"✅ Found Data for {comp} | {qtr} (from Sheet)")
                     comp_data.append(db_data)
                 else:
-                    # 3. FETCH FROM DRIVE
-                    status_box.write(f"🔍 Searching Drive for {comp} {qtr}...")
+                    # DATA MISSING -> SEARCH PDF (DRIVE SECOND)
+                    status_box.write(f"🔍 Data missing in Sheet. Searching Drive for {comp} {qtr}...")
                     text, info = find_and_extract_all_docs(comp, qtr)
                     
                     if text:
                         status_box.info(f"📄 Found: {info}. Analyzing with AI...")
-                        ai_data = analyze_content(text, comp)
+                        ai_data = analyze_content_with_fallback(text, comp) # Uses Fallback Logic
                         if ai_data:
                             save_to_sheet(ws, ai_data, qtr)
                             ai_data["Quarter"] = qtr
                             comp_data.append(ai_data)
-                            status_box.success(f"💾 Saved New Data for {comp} {qtr}")
+                            status_box.success(f"💾 Processed & Saved {comp} {qtr}")
                     else:
                         status_box.error(f"❌ {info} (No PDF in Drive)")
             
