@@ -72,14 +72,14 @@ if check_password():
             all_records = worksheet.get_all_records()
             df = pd.DataFrame(all_records)
             if df.empty: return None
+            # Check if Quarter column exists and has data
             if "Quarter" not in df.columns: return None
-            # Filter for the specific quarter
             row = df[df["Quarter"] == quarter]
             if not row.empty:
                 return row.iloc[0].to_dict()
             return None
         except Exception as e:
-            # st.error(f"DB Read Error: {e}") # Optional logging
+            # st.error(f"DB Read Error: {e}") 
             return None
 
     def save_to_sheet(worksheet, data, quarter):
@@ -96,17 +96,17 @@ if check_password():
         worksheet.append_row(row)
 
     # --- ROBUST AI ENGINE WITH FALLBACK ---
-    def analyze_content_with_fallback(combined_text, competitor):
+    def analyze_content(combined_text, competitor):
         genai.configure(api_key=st.secrets["gemini_api_key"])
         
-        # PRIORITIZED MODEL LIST (Future Proofing -> Stable -> Legacy)
-        # We try them in this order. If one fails (404/Quota), we try the next.
+        # PRIORITIZED MODEL LIST
+        # The script will try these in order. If one fails, it moves to the next.
         model_candidates = [
-            "gemini-3.0-pro-preview", # Future/Beta
-            "gemini-2.0-flash-exp",   # Bleeding Edge
+            "gemini-2.0-flash-exp",   # Latest Flash
             "gemini-1.5-pro",         # High Intelligence
             "gemini-1.5-flash",       # Standard Fast
-            "gemini-1.5-flash-8b",    # Ultra Fast
+            "gemini-1.5-flash-001",   # Versioned Fast
+            "gemini-1.5-flash-002",   # Versioned Fast
             "gemini-1.0-pro",         # Legacy Fallback
             "gemini-pro"              # Oldest Fallback
         ]
@@ -134,7 +134,7 @@ if check_password():
 
         for model_name in model_candidates:
             try:
-                # st.toast(f"Trying Model: {model_name}...") # Uncomment for debugging
+                # st.toast(f"Trying AI Model: {model_name}...") # Optional: Debugging
                 model = genai.GenerativeModel(model_name)
                 response = model.generate_content([prompt, combined_text])
                 
@@ -148,14 +148,10 @@ if check_password():
                 return json.loads(raw_text) # Success! Return data.
 
             except Exception as e:
-                # Log error and continue to next model
                 last_error = e
-                # Only print specific errors to avoid clutter
-                if "404" in str(e) or "429" in str(e):
-                    continue
-                else:
-                    print(f"Model {model_name} failed with {e}")
-                    continue
+                # Only log strictly necessary errors
+                # print(f"Model {model_name} failed: {e}")
+                continue
 
         # If loop finishes and nothing returned:
         st.error(f"All AI Models Failed. Last Error: {last_error}")
@@ -238,24 +234,22 @@ if check_password():
             for qtr in selected_quarters:
                 # 2. CHECK EXISTING DATA (SHEET FIRST)
                 db_data = get_existing_data(ws, qtr)
-                
                 if db_data:
-                    # DATA FOUND IN SHEET -> USE IT
-                    status_box.success(f"✅ Found Data for {comp} | {qtr} (from Sheet)")
+                    status_box.success(f"✅ Found Data for {comp} | {qtr}")
                     comp_data.append(db_data)
                 else:
-                    # DATA MISSING -> SEARCH PDF (DRIVE SECOND)
-                    status_box.write(f"🔍 Data missing in Sheet. Searching Drive for {comp} {qtr}...")
+                    # 3. FETCH FROM DRIVE
+                    status_box.write(f"🔍 Searching Drive for {comp} {qtr}...")
                     text, info = find_and_extract_all_docs(comp, qtr)
                     
                     if text:
                         status_box.info(f"📄 Found: {info}. Analyzing with AI...")
-                        ai_data = analyze_content_with_fallback(text, comp) # Uses Fallback Logic
+                        ai_data = analyze_content(text, comp)
                         if ai_data:
                             save_to_sheet(ws, ai_data, qtr)
                             ai_data["Quarter"] = qtr
                             comp_data.append(ai_data)
-                            status_box.success(f"💾 Processed & Saved {comp} {qtr}")
+                            status_box.success(f"💾 Saved New Data for {comp} {qtr}")
                     else:
                         status_box.error(f"❌ {info} (No PDF in Drive)")
             
