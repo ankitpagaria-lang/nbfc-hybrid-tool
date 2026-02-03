@@ -72,14 +72,13 @@ if check_password():
             all_records = worksheet.get_all_records()
             df = pd.DataFrame(all_records)
             if df.empty: return None
-            # Check if Quarter column exists and has data
             if "Quarter" not in df.columns: return None
+            # Filter for the specific quarter
             row = df[df["Quarter"] == quarter]
             if not row.empty:
                 return row.iloc[0].to_dict()
             return None
         except Exception as e:
-            # st.error(f"DB Read Error: {e}") 
             return None
 
     def save_to_sheet(worksheet, data, quarter):
@@ -95,22 +94,45 @@ if check_password():
         ]
         worksheet.append_row(row)
 
-    # --- ROBUST AI ENGINE WITH FALLBACK ---
+    # --- DYNAMIC & ROBUST AI ENGINE ---
     def analyze_content(combined_text, competitor):
         genai.configure(api_key=st.secrets["gemini_api_key"])
         
-        # PRIORITIZED MODEL LIST
-        # The script will try these in order. If one fails, it moves to the next.
-        model_candidates = [
-            "gemini-2.0-flash-exp",   # Latest Flash
-            "gemini-1.5-pro",         # High Intelligence
-            "gemini-1.5-flash",       # Standard Fast
-            "gemini-1.5-flash-001",   # Versioned Fast
-            "gemini-1.5-flash-002",   # Versioned Fast
-            "gemini-1.0-pro",         # Legacy Fallback
-            "gemini-pro"              # Oldest Fallback
+        # 1. DISCOVER AVAILABLE MODELS (Ask Google what we have)
+        available_models = []
+        try:
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    available_models.append(m.name)
+        except Exception as e:
+            st.error(f"Failed to list models: {e}")
+            return None
+
+        # 2. DEFINE PRIORITY (Latest to Legacy)
+        # Lower score = Higher Priority
+        priority_map = [
+            ("gemini-3", 1),       # Future
+            ("gemini-2", 2),       # Bleeding edge
+            ("gemini-1.5-pro", 3), # Best Stable
+            ("gemini-1.5-flash", 4), # Fast Stable
+            ("gemini-1.0", 5),     # Legacy
+            ("gemini-pro", 6)      # Oldest
         ]
 
+        def get_priority(model_name):
+            for key, score in priority_map:
+                if key in model_name:
+                    return score
+            return 99 # Default for unknown models
+
+        # Sort the actual available models by our priority logic
+        available_models.sort(key=get_priority)
+
+        if not available_models:
+            st.error("No compatible Gemini models found for your API Key.")
+            return None
+
+        # 3. EXECUTE SURVIVOR LOOP
         prompt = f"""
         You are a Strategic Analyst analyzing {competitor}. 
         Source Material: **Investor Presentation / Earnings Call Transcript**.
@@ -132,9 +154,9 @@ if check_password():
 
         last_error = None
 
-        for model_name in model_candidates:
+        for model_name in available_models:
             try:
-                # st.toast(f"Trying AI Model: {model_name}...") # Optional: Debugging
+                # st.toast(f"Trying Model: {model_name}...") # Optional: Debug
                 model = genai.GenerativeModel(model_name)
                 response = model.generate_content([prompt, combined_text])
                 
@@ -149,8 +171,7 @@ if check_password():
 
             except Exception as e:
                 last_error = e
-                # Only log strictly necessary errors
-                # print(f"Model {model_name} failed: {e}")
+                # Continue to next model in the list
                 continue
 
         # If loop finishes and nothing returned:
@@ -234,22 +255,24 @@ if check_password():
             for qtr in selected_quarters:
                 # 2. CHECK EXISTING DATA (SHEET FIRST)
                 db_data = get_existing_data(ws, qtr)
+                
                 if db_data:
-                    status_box.success(f"✅ Found Data for {comp} | {qtr}")
+                    # DATA FOUND IN SHEET -> USE IT
+                    status_box.success(f"✅ Found Data for {comp} | {qtr} (from Sheet)")
                     comp_data.append(db_data)
                 else:
-                    # 3. FETCH FROM DRIVE
-                    status_box.write(f"🔍 Searching Drive for {comp} {qtr}...")
+                    # DATA MISSING -> SEARCH PDF (DRIVE SECOND)
+                    status_box.write(f"🔍 Data missing in Sheet. Searching Drive for {comp} {qtr}...")
                     text, info = find_and_extract_all_docs(comp, qtr)
                     
                     if text:
                         status_box.info(f"📄 Found: {info}. Analyzing with AI...")
-                        ai_data = analyze_content(text, comp)
+                        ai_data = analyze_content(text, comp) # Dynamic Model Call
                         if ai_data:
                             save_to_sheet(ws, ai_data, qtr)
                             ai_data["Quarter"] = qtr
                             comp_data.append(ai_data)
-                            status_box.success(f"💾 Saved New Data for {comp} {qtr}")
+                            status_box.success(f"💾 Processed & Saved {comp} {qtr}")
                     else:
                         status_box.error(f"❌ {info} (No PDF in Drive)")
             
