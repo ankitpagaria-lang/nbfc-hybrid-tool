@@ -10,48 +10,33 @@ import json
 import pypdf
 import time
 
-# --- 1. CONFIGURATION (Must be the first Streamlit command) ---
+# --- 1. CONFIGURATION ---
 st.set_page_config(page_title="NBFC Competitive Intelligence", layout="wide")
 
-# --- 2. PASSWORD PROTECTION LOGIC ---
+# --- 2. PASSWORD PROTECTION ---
 def check_password():
     """Returns `True` if the user had the correct password."""
-
     def password_entered():
-        """Checks whether a password entered by the user is correct."""
         if st.session_state["password"] == st.secrets["passwords"]["ceo"]:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Don't store password
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        # First run, show input for password.
-        st.text_input(
-            "Please enter the access password", type="password", on_change=password_entered, key="password"
-        )
+        st.text_input("Enter Access Password", type="password", on_change=password_entered, key="password")
         return False
     elif not st.session_state["password_correct"]:
-        # Password incorrect, show input + error.
-        st.text_input(
-            "Please enter the access password", type="password", on_change=password_entered, key="password"
-        )
-        st.error("😕 Password incorrect")
+        st.text_input("Enter Access Password", type="password", on_change=password_entered, key="password")
+        st.error("❌ Incorrect Password")
         return False
     else:
-        # Password correct.
         return True
 
-# --- 3. MAIN APPLICATION (Runs only if Password is Correct) ---
 if check_password():
-
-    # --- CONSTANTS & CONFIG ---
-    TRACKED_QUARTERS = [
-        "Q3FY26", "Q2FY26", "Q1FY26", 
-        "Q4FY25", "Q3FY25", "Q2FY25", "Q1FY25",
-        "FY24"
-    ]
-
+    
+    # --- CONSTANTS ---
+    TRACKED_QUARTERS = ["Q3FY26", "Q2FY26", "Q1FY26", "Q4FY25", "Q3FY25", "Q2FY25", "Q1FY25", "FY24"]
     PILLAR_MAP = {
         "Financial Health": ["NIM_Spreads", "Fee_Income_Ratio", "Cost_to_Income", "RoA", "RoE", "Credit_Cost"],
         "Asset Quality": ["GNPA", "NNPA", "Stage_2_Assets", "Stage_3_Assets", "Collection_Efficiency", "Concentration_Risk"],
@@ -61,14 +46,11 @@ if check_password():
         "Soft Power": ["Capital_Adequacy_CRAR", "Regulatory_Standing", "Leadership_Depth", "ESG_Score"]
     }
 
-    # --- HELPER FUNCTIONS ---
+    # --- HELPERS ---
     def get_gspread_client():
         creds = service_account.Credentials.from_service_account_info(
             st.secrets["gcp_service_account"],
-            scopes=[
-                "https://www.googleapis.com/auth/spreadsheets",
-                "https://www.googleapis.com/auth/drive"
-            ]
+            scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         )
         return gspread.authorize(creds)
 
@@ -80,136 +62,89 @@ if check_password():
         return build('drive', 'v3', credentials=creds)
 
     def get_tab_if_exists(sheet, tab_name):
-        """STRICT CHECK: Returns the worksheet if it exists. Returns None if it does not."""
         try:
-            worksheet = sheet.worksheet(tab_name)
-            return worksheet
+            return sheet.worksheet(tab_name)
         except gspread.exceptions.WorksheetNotFound:
             return None 
 
     def get_existing_data(worksheet, quarter):
-        """Fetches the row for the existing quarter."""
         try:
             all_records = worksheet.get_all_records()
             df = pd.DataFrame(all_records)
             if df.empty: return None
+            # Check if Quarter column exists and has data
+            if "Quarter" not in df.columns: return None
             row = df[df["Quarter"] == quarter]
             if not row.empty:
                 return row.iloc[0].to_dict()
             return None
-        except:
+        except Exception as e:
+            st.error(f"DB Read Error: {e}")
             return None
 
     def save_to_sheet(worksheet, data, quarter):
-        """Saves the AI extracted data into the sheet."""
+        # Maps JSON keys to the specific Sheet Column Order
         row = [
             quarter,
-            data.get("NIM_Spreads"), data.get("Fee_Income_Ratio"), data.get("Cost_to_Income"), data.get("RoA"), data.get("RoE"), data.get("Credit_Cost"),
-            data.get("GNPA"), data.get("NNPA"), data.get("Stage_2_Assets"), data.get("Stage_3_Assets"), data.get("Collection_Efficiency"), data.get("Concentration_Risk"),
-            data.get("AUM_Growth"), data.get("Disbursement_Velocity"), data.get("Co_Lending_Share"), data.get("Product_Strategy"),
-            data.get("Cost_of_Funds"), data.get("Liability_Mix"), data.get("ALM_Gap"), data.get("Direct_Assignment"),
-            data.get("Digital_Sourcing_Percent"), data.get("Productivity_Metrics"), data.get("Tech_Stack_AI"), data.get("Customer_Friction_TAT"),
-            data.get("Capital_Adequacy_CRAR"), data.get("Regulatory_Standing"), data.get("Leadership_Depth"), data.get("ESG_Score")
+            data.get("NIM_Spreads", "-"), data.get("Fee_Income_Ratio", "-"), data.get("Cost_to_Income", "-"), data.get("RoA", "-"), data.get("RoE", "-"), data.get("Credit_Cost", "-"),
+            data.get("GNPA", "-"), data.get("NNPA", "-"), data.get("Stage_2_Assets", "-"), data.get("Stage_3_Assets", "-"), data.get("Collection_Efficiency", "-"), data.get("Concentration_Risk", "-"),
+            data.get("AUM_Growth", "-"), data.get("Disbursement_Velocity", "-"), data.get("Co_Lending_Share", "-"), data.get("Product_Strategy", "-"),
+            data.get("Cost_of_Funds", "-"), data.get("Liability_Mix", "-"), data.get("ALM_Gap", "-"), data.get("Direct_Assignment", "-"),
+            data.get("Digital_Sourcing_Percent", "-"), data.get("Productivity_Metrics", "-"), data.get("Tech_Stack_AI", "-"), data.get("Customer_Friction_TAT", "-"),
+            data.get("Capital_Adequacy_CRAR", "-"), data.get("Regulatory_Standing", "-"), data.get("Leadership_Depth", "-"), data.get("ESG_Score", "-")
         ]
         worksheet.append_row(row)
 
     def analyze_content(combined_text, competitor):
         genai.configure(api_key=st.secrets["gemini_api_key"])
-                
         try:
-            all_models = list(genai.list_models())
-            valid_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
+            model = genai.GenerativeModel("gemini-1.5-flash") # Safe default
             
-            def model_priority(name):
-                if "1.5-flash" in name: return 0 
-                if "1.5-pro" in name: return 1
-                if "gemini-pro" in name: return 2
-                return 3
-                
-            valid_models.sort(key=model_priority)
+            prompt = f"""
+            You are a Strategic Analyst analyzing {competitor}. 
+            Source Material: **Investor Presentation / Earnings Call Transcript**.
             
-            if not valid_models:
-                 st.error("Your API Key has no access to any generative models.")
-                 return None
-                 
+            **OUTPUT RULES:**
+            1. **FINANCIALS:** BE CONCISE. Numbers only. Format: "2.5% (down 10bps)". Normalize to INR Cr.
+            2. **STRATEGY:** Provide 2-3 sentences of context/commentary from management.
+
+            EXTRACT DATA STRICTLY INTO JSON:
+            {{
+                "NIM_Spreads": "...", "Fee_Income_Ratio": "...", "Cost_to_Income": "...", "RoA": "...", "RoE": "...", "Credit_Cost": "...",
+                "GNPA": "...", "NNPA": "...", "Stage_2_Assets": "...", "Stage_3_Assets": "...", "Collection_Efficiency": "...", "Concentration_Risk": "...",
+                "AUM_Growth": "...", "Disbursement_Velocity": "...", "Co_Lending_Share": "...", "Product_Strategy": "...",
+                "Cost_of_Funds": "...", "Liability_Mix": "...", "ALM_Gap": "...", "Direct_Assignment": "...",
+                "Digital_Sourcing_Percent": "...", "Productivity_Metrics": "...", "Tech_Stack_AI": "...", "Customer_Friction_TAT": "...",
+                "Capital_Adequacy_CRAR": "...", "Regulatory_Standing": "...", "Leadership_Depth": "...", "ESG_Score": "..."
+            }}
+            """
+            response = model.generate_content([prompt, combined_text])
+            raw_text = response.text
+            if "```json" in raw_text:
+                raw_text = raw_text.split("```json")[1].split("```")[0]
+            elif "```" in raw_text:
+                raw_text = raw_text.split("```")[1]
+            return json.loads(raw_text)
         except Exception as e:
-            st.error(f"Failed to fetch model list: {e}")
+            st.error(f"AI Error: {e}")
             return None
-
-        # 6-PILLAR PROMPT - HYBRID OUTPUT RULES
-        prompt = f"""
-        You are a Strategic Analyst analyzing {competitor}. 
-        I have provided text from the **Investor Presentation AND/OR Earnings Call Transcript**.
-        
-        Synthesize information from both sources. 
-        
-        **CRITICAL OUTPUT RULES:**
-        1. **FINANCIAL METRICS (Financial Health, Asset Quality, Funding):** - BE EXTREMELY CONCISE. Just the numbers.
-           - Normalize to **INR Crores** where possible.
-           - Example: "2.5% (down 10bps)" or "500 Cr"
-
-        2. **STRATEGIC METRICS (Growth, Digital, Soft Power):**
-           - **PROVIDE CONTEXT.** Use 2-3 sentences.
-           - Include Management Commentary/Strategy from the transcript.
-           - Example: "Launched 'Udaan' app. CEO stated this will reduce rural acquisition costs by 15%."
-
-        EXTRACT DATA STRICTLY INTO JSON keys below:
-
-        PILLAR 1: FINANCIAL HEALTH (Concise)
-        - NIM_Spreads, Fee_Income_Ratio, Cost_to_Income, RoA, RoE, Credit_Cost
-
-        PILLAR 2: ASSET QUALITY (Concise)
-        - GNPA, NNPA, Stage_2_Assets, Stage_3_Assets, Collection_Efficiency, Concentration_Risk
-
-        PILLAR 3: GROWTH (Descriptive + Commentary)
-        - AUM_Growth, Disbursement_Velocity, Co_Lending_Share, Product_Strategy
-
-        PILLAR 4: FUNDING (Concise)
-        - Cost_of_Funds, Liability_Mix, ALM_Gap, Direct_Assignment
-
-        PILLAR 5: DIGITAL (Descriptive + Commentary)
-        - Digital_Sourcing_Percent, Productivity_Metrics, Tech_Stack_AI, Customer_Friction_TAT
-
-        PILLAR 6: SOFT POWER (Descriptive + Commentary)
-        - Capital_Adequacy_CRAR, Regulatory_Standing, Leadership_Depth, ESG_Score
-
-        OUTPUT FORMAT: JSON Object only.
-        """
-
-        last_error = None
-        
-        for model_name in valid_models:
-            try:
-                model = genai.GenerativeModel(model_name)
-                response = model.generate_content([prompt, combined_text])
-                
-                raw_text = response.text
-                if "```json" in raw_text:
-                    raw_text = raw_text.split("```json")[1].split("```")[0]
-                elif "```" in raw_text:
-                    raw_text = raw_text.split("```")[1]
-                
-                return json.loads(raw_text) 
-                
-            except Exception as e:
-                last_error = e
-                continue 
-
-        st.error(f"Analysis Failed. Last Error: {last_error}")
-        return None
 
     def find_and_extract_all_docs(comp, qtr):
         service = get_drive_service()
+        # Loose match search
         query = f"name contains '{comp}' and name contains '{qtr}' and mimeType = 'application/pdf' and trashed = false"
         
         try:
             results = service.files().list(q=query, fields="files(id, name)").execute()
             files = results.get('files', [])
             
-            if not files: return None
+            if not files: 
+                return None, f"No files found for {comp} {qtr}"
             
-            full_combined_text = ""
+            full_text = ""
+            file_names = []
             for file in files:
+                file_names.append(file['name'])
                 request = service.files().get_media(fileId=file['id'])
                 fh = io.BytesIO()
                 downloader = MediaIoBaseDownload(fh, request)
@@ -217,192 +152,127 @@ if check_password():
                 while not done: _, done = downloader.next_chunk()
                 
                 try:
-                    pdf_reader = pypdf.PdfReader(fh)
-                    for page in pdf_reader.pages:
-                        if page.extract_text():
-                            full_combined_text += page.extract_text() + "\n"
-                except:
-                    pass
+                    pdf = pypdf.PdfReader(fh)
+                    for page in pdf.pages:
+                        if page.extract_text(): full_text += page.extract_text() + "\n"
+                except: pass
             
-            return full_combined_text
-
+            return full_text, file_names
         except Exception as e:
-            st.error(f"Drive Error: {e}")
-            return None
+            return None, str(e)
 
-    # --- UI LAYOUT ---
+    # --- UI ---
     st.title("🏦 NBFC Competitive Intelligence")
     st.markdown("---")
 
-    # INPUT SECTION
     with st.container():
         col1, col2 = st.columns([1, 2])
-        
         with col1:
-            st.subheader("Configuration")
-            analysis_mode = st.radio("Select Analysis Type:", ["Financial Analysis (Matrix)", "Strategic Analysis (Executive Matrix)"])
-            
-            selected_competitors = st.multiselect(
-                "Select Competitors", 
-                ["SBFC","Poonawala","FedFina","Tata Capital", "HDB"],
-                default=["SBFC"]
-            )
-
+            analysis_mode = st.radio("Select View:", ["Financial Analysis", "Strategic Analysis"])
+            selected_competitors = st.multiselect("Competitors", ["SBFC","Poonawala","FedFina","Tata Capital", "HDB"], default=["SBFC"])
         with col2:
-            st.subheader("Parameters")
             if "Financial" in analysis_mode:
-                # Financial Mode
-                selected_quarters = st.multiselect(
-                    "Select Periods for Comparison", 
-                    TRACKED_QUARTERS,
-                    default=[TRACKED_QUARTERS[0]]
-                )
-                selected_pillars = ["Financial Health", "Funding & Liquidity", "Asset Quality"] 
-                
+                selected_quarters = st.multiselect("Quarters", TRACKED_QUARTERS, default=[TRACKED_QUARTERS[0]])
+                selected_pillars = ["Financial Health", "Funding & Liquidity", "Asset Quality"]
             else:
-                # Strategic Mode
-                selected_pillars = st.multiselect(
-                    "Select Strategic Pillars",
-                    list(PILLAR_MAP.keys()),
-                    default=["Asset Quality", "Growth Engine"]
-                )
-                selected_quarters = st.multiselect(
-                    "Select Periods for Comparison", 
-                    TRACKED_QUARTERS,
-                    default=[TRACKED_QUARTERS[0]]
-                )
+                selected_pillars = st.multiselect("Pillars", list(PILLAR_MAP.keys()), default=["Asset Quality", "Growth Engine"])
+                selected_quarters = st.multiselect("Quarters", TRACKED_QUARTERS, default=[TRACKED_QUARTERS[0]])
 
-        st.markdown("###")
-        start_btn = st.button("🚀 Generate Analysis Report", type="primary")
-
-    # --- EXECUTION LOGIC ---
-    if start_btn:
+    st.markdown("###")
+    if st.button("🚀 Generate Report", type="primary"):
         if not selected_competitors:
-            st.error("Please select at least one competitor.")
+            st.error("Select at least one competitor.")
             st.stop()
 
         gc = get_gspread_client()
         sh = gc.open_by_key(st.secrets["sheet_id"])
-        
         final_results = {}
-
-        progress_text = "Initializing..."
-        my_bar = st.progress(0, text=progress_text)
-        total_steps = len(selected_competitors) * len(selected_quarters)
-        step_count = 0
+        
+        # STATUS CONTAINER
+        status_box = st.status("Processing Data...", expanded=True)
 
         for comp in selected_competitors:
-            ws = get_tab_if_exists(sh, comp)
-            comp_data = [] 
+            status_box.write(f"**Checking {comp}...**")
             
+            # 1. CHECK TAB
+            ws = get_tab_if_exists(sh, comp)
             if not ws:
-                # Tab doesn't exist -> SKIP.
-                pass
-            else:
-                # Tab Exists -> Proceed
-                for qtr in selected_quarters:
-                    step_count += 1
-                    my_bar.progress(step_count / total_steps, text=f"Processing {comp} | {qtr}...")
+                status_box.warning(f"⚠️ Tab '{comp}' NOT found in Sheet. Skipping.")
+                continue # Skip to next competitor
+            
+            comp_data = []
+            for qtr in selected_quarters:
+                # 2. CHECK EXISTING DATA
+                db_data = get_existing_data(ws, qtr)
+                if db_data:
+                    status_box.success(f"✅ Found Data for {comp} | {qtr}")
+                    comp_data.append(db_data)
+                else:
+                    # 3. FETCH FROM DRIVE
+                    status_box.write(f"🔍 Searching Drive for {comp} {qtr}...")
+                    text, info = find_and_extract_all_docs(comp, qtr)
                     
-                    # CHECK IF DATA EXISTS IN SHEET
-                    db_data = get_existing_data(ws, qtr)
-                    
-                    if db_data:
-                        comp_data.append(db_data)
+                    if text:
+                        status_box.info(f"📄 Found: {info}. Analyzing with AI...")
+                        ai_data = analyze_content(text, comp)
+                        if ai_data:
+                            save_to_sheet(ws, ai_data, qtr)
+                            ai_data["Quarter"] = qtr
+                            comp_data.append(ai_data)
+                            status_box.success(f"💾 Saved New Data for {comp} {qtr}")
                     else:
-                        # DATA MISSING -> FIND PDFS & ANALYZE
-                        combined_text = find_and_extract_all_docs(comp, qtr)
-                        
-                        if combined_text:
-                            ai_data = analyze_content(combined_text, comp)
-                            if ai_data:
-                                save_to_sheet(ws, ai_data, qtr)
-                                ai_data["Quarter"] = qtr 
-                                comp_data.append(ai_data)
+                        status_box.error(f"❌ {info} (No PDF in Drive)")
             
             if comp_data:
                 final_results[comp] = pd.DataFrame(comp_data)
 
-        my_bar.empty()
-        st.success("Analysis Complete!")
-        st.markdown("---")
+        status_box.update(label="Processing Complete!", state="complete", expanded=False)
+        st.divider()
 
-        # --- OUTPUT MATRIX GENERATOR ---
-        def generate_comparison_matrix(quarter, pillars):
-            st.markdown(f"### 🗓️ Period: {quarter}")
+        # --- MATRIX GENERATOR ---
+        def render_matrix(quarter, pillars):
+            st.subheader(f"🗓️ Period: {quarter}")
             matrix_rows = []
             
             for pillar in pillars:
                 metrics = PILLAR_MAP.get(pillar, [])
                 for metric in metrics:
-                    row_data = {"Category": pillar, "Metric": metric}
+                    row = {"Category": pillar, "Metric": metric}
                     for comp in selected_competitors:
                         df = final_results.get(comp)
-                        val = "No Data" 
-                        if df is not None and not df.empty and "Quarter" in df.columns:
+                        val = "No Data"
+                        if df is not None and not df.empty:
                             match = df[df["Quarter"] == quarter]
                             if not match.empty:
                                 val = match.iloc[0].get(metric, "-")
-                        row_data[comp] = val
-                    matrix_rows.append(row_data)
+                        row[comp] = val
+                    matrix_rows.append(row)
             
             if matrix_rows:
                 df_view = pd.DataFrame(matrix_rows)
                 
-                # --- STYLING LOGIC ---
-                styled_df = df_view.style.set_properties(**{
-                    'white-space': 'normal', 
-                    'height': 'auto',
-                    'border': '1px solid #e6e9ef',
-                    'color': '#000'
+                # STYLING
+                styled = df_view.style.set_properties(**{
+                    'white-space': 'normal', 'height': 'auto', 'border': '1px solid #e6e9ef', 'color': 'black'
                 }).set_table_styles([
-                    {'selector': 'th', 'props': [
-                        ('background-color', '#2b2b2b'), 
-                        ('color', 'white'), 
-                        ('font-weight', 'bold'),
-                        ('text-align', 'center'),
-                        ('border', '1px solid white')
-                    ]},
-                    {'selector': 'td:nth-child(1)', 'props': [
-                        ('font-weight', 'bold'),
-                        ('background-color', '#f0f2f6')
-                    ]},
-                    {'selector': 'td:nth-child(2)', 'props': [
-                        ('font-weight', 'bold'),
-                        ('background-color', '#f0f2f6')
-                    ]}
+                    {'selector': 'th', 'props': [('background-color', '#2b2b2b'), ('color', 'white'), ('font-weight', 'bold')]},
+                    {'selector': 'td:nth-child(1)', 'props': [('font-weight', 'bold'), ('background-color', '#f0f2f6')]},
+                    {'selector': 'td:nth-child(2)', 'props': [('font-weight', 'bold'), ('background-color', '#f0f2f6')]}
                 ])
-
-                # Streamlit Config
-                column_config_dict = {}
-                column_config_dict["Category"] = st.column_config.TextColumn("Category", width="small")
-                column_config_dict["Metric"] = st.column_config.TextColumn("Metric", width="medium")
+                
+                cols_config = {
+                    "Category": st.column_config.TextColumn("Category", width="small"),
+                    "Metric": st.column_config.TextColumn("Metric", width="medium")
+                }
                 for comp in selected_competitors:
-                    column_config_dict[comp] = st.column_config.TextColumn(comp, width="large")
+                    cols_config[comp] = st.column_config.TextColumn(comp, width="large")
 
-                st.dataframe(
-                    styled_df, 
-                    use_container_width=True,
-                    column_config=column_config_dict,
-                    hide_index=True 
-                )
+                st.dataframe(styled, use_container_width=True, column_config=cols_config, hide_index=True)
             else:
-                st.info(f"No matching data found for {quarter}")
-            st.divider()
+                st.info(f"No Data Available for {quarter}")
 
-        # --- DISPLAY ---
-        if "Financial" in analysis_mode:
-            st.header("📊 Financial Performance Matrix")
-            if not final_results:
-                st.warning("No data found (Ensure Tabs exist in Google Sheet).")
-            else:
-                for qtr in selected_quarters:
-                    generate_comparison_matrix(qtr, selected_pillars)
-
-        elif "Strategic" in analysis_mode:
-            st.header("🧠 Strategic Executive Briefing")
-            if not final_results:
-                st.warning("No data found (Ensure Tabs exist in Google Sheet).")
-            else:
-                for qtr in selected_quarters:
-                    generate_comparison_matrix(qtr, selected_pillars)
+        if not final_results:
+            st.warning("No data found for any selected competitor.")
+        else:
+            for qtr in selected_quarters:
+                render_matrix(qtr, selected_pillars)
